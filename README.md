@@ -89,3 +89,7 @@ disappear.
 That, the measurements behind it, and the approaches that were tried and abandoned are written
 up in **[docs/internals.md](docs/internals.md)** — along with the architecture, the publishing
 pipeline, and troubleshooting.
+
+## License
+
+[MIT](LICENSE) © Alexandre Vieira
