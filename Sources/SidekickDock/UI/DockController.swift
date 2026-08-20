@@ -1,0 +1,182 @@
+import AppKit
+import SwiftUI
+
+/// Borderless, non-activating panel that floats above regular windows on one display.
+final class DockPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+@MainActor
+final class DockController {
+    let displayID: CGDirectDisplayID
+    let model: DockPanelModel
+    let panel: DockPanel
+
+    private var isBoosting = false
+    private var visibleFrame: NSRect
+    private var shrinkWorkItem: DispatchWorkItem?
+    /// Nothing to show on this display at all.
+    private var isEmpty = false
+    /// The active window fills this display, so the resting sliver would sit on top of
+    /// content the user gave the whole screen to. The dock still reveals on hover.
+    private var hidesPeek = false
+
+    init(screen: NSScreen) {
+        displayID = ScreenGeometry.displayID(of: screen)
+        model = DockPanelModel(displayID: displayID)
+        visibleFrame = screen.visibleFrame
+
+        panel = DockPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.level = .floating
+        panel.isMovable = false
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.animationBehavior = .none
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        // The panel is always hit-testable. Its *frame* is what changes: collapsed, it is
+        // only as wide as the peeking sliver. Toggling `ignoresMouseEvents` from pointer
+        // events instead would race the click — a click arriving before the last
+        // mouse-moved was processed would fall through to the desktop or the window behind.
+        panel.ignoresMouseEvents = false
+        panel.acceptsMouseMovedEvents = true
+
+        let root = DockStripView(model: model)
+            .environmentObject(WindowStore.shared)
+            .environmentObject(Preferences.shared)
+
+        let hosting = PanelHostingView(rootView: root)
+        hosting.autoresizingMask = [.width, .height]
+        panel.contentView = hosting
+
+        updateFrame(for: screen)
+        panel.orderFrontRegardless()
+    }
+
+    // MARK: - Geometry
+
+    func updateFrame(for screen: NSScreen) {
+        visibleFrame = screen.visibleFrame
+        shrinkWorkItem?.cancel()
+        shrinkWorkItem = nil
+        applyFrame(revealed: model.isRevealed)
+    }
+
+    /// Extra room for the perspective overhang, hover lift, and directional shadow.
+    private var revealedWidth: CGFloat {
+        CGFloat(Preferences.shared.cardWidth) + Theme.panelPadding * 2 + 54
+    }
+
+    /// Just the visible sliver plus a little headroom for its shadow.
+    private var collapsedWidth: CGFloat { Theme.peek + 22 }
+
+    private func frame(revealed: Bool) -> NSRect {
+        let width = revealed ? revealedWidth : collapsedWidth
+        let x = Preferences.shared.edge == .left ? visibleFrame.minX : visibleFrame.maxX - width
+        return NSRect(x: x, y: visibleFrame.minY, width: width, height: visibleFrame.height)
+    }
+
+    private func applyFrame(revealed: Bool) {
+        panel.setFrame(frame(revealed: revealed), display: false)
+    }
+
+    /// The area the pointer must stay inside to keep the dock revealed.
+    var hoverFrame: NSRect { frame(revealed: true).insetBy(dx: -10, dy: -10) }
+
+    func triggerZone(for screen: NSScreen) -> NSRect {
+        let visible = screen.visibleFrame
+        let thickness: CGFloat = 4
+        let x = Preferences.shared.edge == .left ? visible.minX : visible.maxX - thickness
+        return NSRect(x: x, y: visible.minY, width: thickness, height: visible.height)
+    }
+
+    // MARK: - Reveal
+
+    /// An empty strip reserves no screen edge and cannot be revealed — there is nothing
+    /// in it to reveal.
+    func setEmpty(_ empty: Bool) {
+        guard isEmpty != empty else { return }
+        isEmpty = empty
+        syncVisibility()
+    }
+
+    /// Hides the resting sliver without disabling the dock: hovering the edge still
+    /// reveals it, it simply stops peeking over a screen-filling window.
+    func setHidesPeek(_ hides: Bool) {
+        guard hidesPeek != hides else { return }
+        hidesPeek = hides
+        guard !model.isRevealed else { return }
+        syncVisibility()
+    }
+
+    /// True only when the dock cannot be revealed at all.
+    var isSuppressed: Bool { isEmpty }
+
+    private var shouldBeOnScreen: Bool {
+        !isEmpty && (model.isRevealed || !hidesPeek)
+    }
+
+    private func syncVisibility() {
+        if shouldBeOnScreen {
+            panel.orderFrontRegardless()
+        } else {
+            panel.orderOut(nil)
+        }
+    }
+
+    func setRevealed(_ revealed: Bool) {
+        guard model.isRevealed != revealed else { return }
+        shrinkWorkItem?.cancel()
+        shrinkWorkItem = nil
+        // The menu belongs to a card that is about to slide away.
+        if !revealed { TileMenuController.shared.close() }
+
+        if revealed {
+            // Widen first so the cards have somewhere to slide into.
+            applyFrame(revealed: true)
+            model.isRevealed = true
+            syncVisibility()
+            if !isBoosting {
+                isBoosting = true
+                WindowStore.shared.beginBoost()
+            }
+        } else {
+            model.isRevealed = false
+            if isBoosting {
+                isBoosting = false
+                WindowStore.shared.endBoost()
+            }
+            // Stay wide, and on screen, until the cards have finished sliding back behind
+            // the edge — otherwise a suppressed dock would blink out mid-animation.
+            let item = DispatchWorkItem { [weak self] in
+                Task { @MainActor in
+                    guard let self, !self.model.isRevealed else { return }
+                    self.shrinkWorkItem = nil
+                    self.applyFrame(revealed: false)
+                    self.syncVisibility()
+                }
+            }
+            shrinkWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + Theme.revealDuration, execute: item)
+        }
+    }
+
+    func tearDown() {
+        shrinkWorkItem?.cancel()
+        shrinkWorkItem = nil
+        if isBoosting {
+            isBoosting = false
+            WindowStore.shared.endBoost()
+        }
+        panel.orderOut(nil)
+        panel.contentView = nil
+    }
+}
