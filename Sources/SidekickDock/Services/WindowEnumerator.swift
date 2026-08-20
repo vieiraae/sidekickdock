@@ -111,6 +111,24 @@ enum WindowEnumerator {
 
     // MARK: - Helpers
 
+    /// The on-screen frame of each of the given windows, as CoreGraphics reports it right now.
+    ///
+    /// Deliberately cheap — a single window-list read, no Accessibility probing — because it
+    /// runs either side of a capture pass to check the subject held still.
+    static func frames(for ids: Set<CGWindowID>) -> [CGWindowID: CGRect] {
+        var frames: [CGWindowID: CGRect] = [:]
+        for entry in entries(options: [.optionOnScreenOnly, .excludeDesktopElements]) {
+            guard let id = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  ids.contains(id),
+                  let bounds = entry[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = bounds["X"], let y = bounds["Y"],
+                  let width = bounds["Width"], let height = bounds["Height"]
+            else { continue }
+            frames[id] = CGRect(x: x, y: y, width: width, height: height)
+        }
+        return frames
+    }
+
     private static func entries(options: CGWindowListOption) -> [[String: Any]] {
         CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
     }

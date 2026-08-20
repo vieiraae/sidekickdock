@@ -59,3 +59,40 @@ final class PreviewPinsTests: XCTestCase {
         XCTAssertTrue(PreviewPins.retained([:], presentMinimised: [1: true], unsettled: [1]).isEmpty)
     }
 }
+
+/// Rejecting captures that are the wrong shape for their window, which is what a frame of a
+/// resize or full-screen transition looks like.
+final class PreviewShapeTests: XCTestCase {
+
+    private let window = CGSize(width: 1200, height: 800)
+
+    func testAMatchingCaptureIsAccepted() {
+        // 2x capture of the same window.
+        XCTAssertTrue(PreviewPins.shapeMatches(image: CGSize(width: 2400, height: 1600),
+                                               window: window))
+    }
+
+    func testRoundingIsTolerated() {
+        // Capture sizes are rounded to whole pixels, so they never match exactly.
+        XCTAssertTrue(PreviewPins.shapeMatches(image: CGSize(width: 601, height: 399),
+                                               window: window))
+    }
+
+    func testASmearedCaptureIsRejected() {
+        // Mid-genie the window is drawn far taller than it is wide.
+        XCTAssertFalse(PreviewPins.shapeMatches(image: CGSize(width: 600, height: 900),
+                                                window: window))
+    }
+
+    func testACaptureFromBeforeAResizeIsRejected() {
+        // The window has just been tiled to a half; the image is still the old full-screen one.
+        XCTAssertFalse(PreviewPins.shapeMatches(image: CGSize(width: 1200, height: 400),
+                                                window: CGSize(width: 600, height: 800)))
+    }
+
+    func testDegenerateSizesAreRejected() {
+        XCTAssertFalse(PreviewPins.shapeMatches(image: .zero, window: window))
+        XCTAssertFalse(PreviewPins.shapeMatches(image: CGSize(width: 100, height: 100),
+                                                window: .zero))
+    }
+}

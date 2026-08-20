@@ -39,4 +39,27 @@ enum PreviewPins {
             return isMinimized || unsettled.contains(id)
         }
     }
+
+    /// How far a capture's shape may differ from its window's before it is treated as a frame
+    /// of an animation rather than a picture of the window.
+    static let shapeTolerance: CGFloat = 0.12
+
+    /// Whether a captured image is the shape its window is.
+    ///
+    /// The frame check either side of a capture pass catches animations that move the window,
+    /// but not the ones that do not: entering full screen, or the moment a tile is applied,
+    /// can leave CoreGraphics reporting a settled frame while the pixels are still a warped
+    /// smear mid-transition. Those images are the wrong shape for their window, which is
+    /// something that can simply be measured.
+    static func shapeMatches(
+        image: CGSize,
+        window: CGSize,
+        tolerance: CGFloat = shapeTolerance
+    ) -> Bool {
+        guard image.width > 0, image.height > 0, window.width > 0, window.height > 0
+        else { return false }
+        let captured = image.width / image.height
+        let expected = window.width / window.height
+        return abs(captured - expected) / expected <= tolerance
+    }
 }

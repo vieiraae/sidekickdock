@@ -487,14 +487,35 @@ final class WindowStore: ObservableObject {
             scales[id] = screen.backingScaleFactor
         }
 
+        // The frames the subjects held going in. A capture pass is not instantaneous — it is a
+        // ScreenCaptureKit round trip per window — so a window can start animating part way
+        // through it, and the image that comes back is a smear of the genie or of a drag.
+        let before = WindowEnumerator.frames(for: Set(ids))
+
         let images = await engine.capture(windowIDs: ids, targetWidth: width, scales: scales)
         guard !images.isEmpty else { return }
+
+        // Anything that moved, or left the screen, while the pass was running is discarded:
+        // the previous preview is a truer picture of the window than a frame of its animation,
+        // and for a minimising window it is the *last* picture there will ever be.
+        let after = WindowEnumerator.frames(for: Set(images.keys))
 
         var merged = thumbnails
         for (id, cgImage) in images {
             // A capture in flight when the user hit minimise resolves mid-genie, so a pinned
             // preview has to survive results that were already on their way.
             guard pinnedPreviews[id] == nil else { continue }
+            guard let start = before[id], let end = after[id], start == end else {
+                DebugLog.log("preview: discarding in-flight capture of #\(id)")
+                continue
+            }
+            guard PreviewPins.shapeMatches(
+                image: CGSize(width: cgImage.width, height: cgImage.height),
+                window: end.size
+            ) else {
+                DebugLog.log("preview: discarding misshapen capture of #\(id)")
+                continue
+            }
             // The point size must undo the same scale the capture applied, or the preview
             // draws at the wrong size on a non-Retina display.
             let backing = scales[id] ?? 2
