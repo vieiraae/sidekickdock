@@ -71,6 +71,15 @@ final class CardGeometryTests: XCTestCase {
         XCTAssertEqual(size.width / size.height, 500 / 867, accuracy: 0.001)
     }
 
+    func testAVeryWideWindowKeepsItsShapeInAShortCard() {
+        // The 2442x414 browser window that was losing 46% of its sides.
+        let crop = CardGeometry.cropFraction(image: CGSize(width: 2442, height: 414), width: 184)
+        XCTAssertEqual(crop, 0, accuracy: 0.0001)
+        let size = CardGeometry.size(width: 184, aspectRatio: 2442 / 414)
+        XCTAssertEqual(size.width, 184, accuracy: 0.01)
+        XCTAssertEqual(size.height, 184 / (2442 / 414), accuracy: 0.01)
+    }
+
     func testAnOrdinaryWindowKeepsTheFullStripWidth() {
         let size = CardGeometry.size(width: 184, aspectRatio: 1600 / 1000)
         XCTAssertEqual(size.width, 184, accuracy: 0.01)

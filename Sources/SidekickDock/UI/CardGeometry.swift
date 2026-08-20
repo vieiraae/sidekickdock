@@ -4,7 +4,12 @@ import CoreGraphics
 enum CardGeometry {
 
     /// A card is never thinner than this, however wide its window is.
-    static let minHeight: CGFloat = 58
+    ///
+    /// Low, because a card that refuses to be short has to cut the sides off a very wide
+    /// window — a 2442x414 browser window lost 46% of itself to a 58pt floor. At 24pt a
+    /// window up to about 7.7:1 still fits whole, and anything wider than that is a sliver
+    /// no preview could say much about anyway.
+    static let minHeight: CGFloat = 24
     /// Nor taller than this multiple of its width, however tall its window is.
     static let maxHeightRatio: CGFloat = 1.35
 
