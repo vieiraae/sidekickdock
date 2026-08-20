@@ -41,6 +41,14 @@ final class WindowStore: ObservableObject {
     /// of an in-flight one.
     private var settledFrames: [CGWindowID: CGRect] = [:]
     private let forgetAfter: TimeInterval = 120
+    /// Windows whose preview is frozen at the frame it held just before it was minimised.
+    ///
+    /// The minimise genie is a capture hazard: Accessibility does not report `isMinimized`
+    /// until part way through it, and a capture started before the click can land in the
+    /// middle of it. Either way the retained preview becomes a smear of the window being
+    /// sucked into the Dock — which is then what the dimmed card shows for as long as the
+    /// window stays minimised. Pinning at the moment of the click keeps the last good frame.
+    private var pinnedPreviews: [CGWindowID: Date] = [:]
 
     private let engine = ThumbnailEngine()
     private var loop: Task<Void, Never>?
@@ -289,6 +297,16 @@ final class WindowStore: ObservableObject {
 
         if windows != current { windows = current }
 
+        // A pinned preview is released once its window is back on screen *and* still, so the
+        // restore animation cannot overwrite it either. Windows that have gone for good drop
+        // out with everything else.
+        pinnedPreviews = PreviewPins.retained(
+            pinnedPreviews,
+            presentMinimised: Dictionary(current.map { ($0.id, $0.isMinimized) },
+                                         uniquingKeysWith: { a, _ in a }),
+            unsettled: unsettled
+        )
+
         let covered = coveredDisplays(in: current)
         if fullScreenDisplays != covered {
             DebugLog.log("displays covered by active window: \(covered.sorted())")
@@ -474,6 +492,9 @@ final class WindowStore: ObservableObject {
 
         var merged = thumbnails
         for (id, cgImage) in images {
+            // A capture in flight when the user hit minimise resolves mid-genie, so a pinned
+            // preview has to survive results that were already on their way.
+            guard pinnedPreviews[id] == nil else { continue }
             // The point size must undo the same scale the capture applied, or the preview
             // draws at the wrong size on a non-Retina display.
             let backing = scales[id] ?? 2
@@ -506,6 +527,10 @@ final class WindowStore: ObservableObject {
     }
 
     func minimize(_ window: ManagedWindow) {
+        // Freeze the preview before the genie starts, so the card keeps the window as it
+        // actually looked rather than mid-flight into the Dock.
+        pinnedPreviews[window.id] = Date()
+
         // Minimising the frontmost app's front window makes macOS promote that app's *next*
         // window to key, and that window is often on another display — so a sibling appears
         // to leap onto the other screen. Handing focus to the display's next window first
