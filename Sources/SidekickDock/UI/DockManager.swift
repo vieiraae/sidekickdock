@@ -157,6 +157,12 @@ final class DockManager {
     private func pointerMoved(to point: NSPoint) {
         guard Permissions.shared.allGranted else { return }
 
+        // Panels only take the clicks that land on a card; everything else goes through to
+        // the desktop or the window behind.
+        for controller in controllers.values {
+            controller.updateClickThrough(pointer: point)
+        }
+
         if let revealedDisplay, let controller = controllers[revealedDisplay] {
             if controller.hoverFrame.contains(point) {
                 cancelHide()

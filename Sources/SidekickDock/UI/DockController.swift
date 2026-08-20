@@ -18,6 +18,7 @@ final class DockController {
     private var visibleFrame: NSRect
     private var shrinkWorkItem: DispatchWorkItem?
     private var contentHeightObserver: AnyCancellable?
+    private var cardRectsObserver: AnyCancellable?
     /// Nothing to show on this display at all.
     private var isEmpty = false
     /// The active window fills this display, so the resting sliver would sit on top of
@@ -44,10 +45,9 @@ final class DockController {
         panel.becomesKeyOnlyIfNeeded = true
         panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
-        // The panel is always hit-testable. Its *frame* is what changes: collapsed, it is
-        // only as wide as the peeking sliver. Toggling `ignoresMouseEvents` from pointer
-        // events instead would race the click — a click arriving before the last
-        // mouse-moved was processed would fall through to the desktop or the window behind.
+        // The panel is a rectangle, but the cards inside it are islands. Rather than swallow
+        // every click that lands on the panel, it is made click-through wherever there is no
+        // card under the pointer — see `updateClickThrough`.
         panel.ignoresMouseEvents = false
         panel.acceptsMouseMovedEvents = true
 
@@ -69,6 +69,13 @@ final class DockController {
             .sink { [weak self] _ in
                 guard let self, !self.model.isRevealed else { return }
                 Task { @MainActor in self.applyFrame(revealed: false) }
+            }
+
+        // A card appearing, growing or sliding under a stationary pointer changes the answer
+        // without any mouse event to recompute it from.
+        cardRectsObserver = model.$cardRects
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.updateClickThrough(pointer: NSEvent.mouseLocation) }
             }
     }
 
@@ -114,6 +121,20 @@ final class DockController {
 
     /// The area the pointer must stay inside to keep the dock revealed.
     var hoverFrame: NSRect { frame(revealed: true).insetBy(dx: -10, dy: -10) }
+
+    /// Lets clicks that miss every card reach whatever is behind the panel.
+    ///
+    /// Toggling from pointer events is only safe because the state is recomputed from the
+    /// live pointer position on every move, on a 60ms poll, *and* whenever the cards
+    /// themselves move — so a click can only land on a stale answer if the layout changed
+    /// under a pointer that then clicked within the same frame.
+    func updateClickThrough(pointer: NSPoint) {
+        let solid = PanelHitTesting.isSolid(point: pointer, cards: model.cardRects, panel: panel.frame)
+        if panel.ignoresMouseEvents == solid {
+            panel.ignoresMouseEvents = !solid
+            DebugLog.log("panel \(displayID): \(solid ? "takes" : "passes through") clicks at \(Int(pointer.x)),\(Int(pointer.y))")
+        }
+    }
 
     func triggerZone(for screen: NSScreen) -> NSRect {
         let visible = screen.visibleFrame

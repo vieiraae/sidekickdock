@@ -9,6 +9,14 @@ final class DockPanelModel: ObservableObject {
     /// Measured rather than computed: card heights follow each window's aspect ratio, so
     /// recalculating the layout here would drift from what SwiftUI actually lays out.
     @Published var contentHeight: CGFloat = 0
+    /// Where the cards are, in the panel's own coordinates with y running down.
+    ///
+    /// The panel is a plain rectangle running the height of the display, but the cards inside
+    /// it are islands with desktop showing between and around them. Without knowing where they
+    /// are the panel has to swallow every click that lands on it, including the ones meant for
+    /// a window behind it — the close button of a full-width window, or the desktop in the gap
+    /// between two cards.
+    @Published var cardRects: [CGRect] = []
     let displayID: CGDirectDisplayID
 
     init(displayID: CGDirectDisplayID) {
@@ -47,6 +55,9 @@ struct DockStripView: View {
         .opacity(windows.isEmpty ? 0 : 1)
         .animation(Theme.reveal, value: model.isRevealed)
         .animation(Theme.reveal, value: windows.count)
+        .onPreferenceChange(CardRectsKey.self) { rects in
+            Task { @MainActor in model.cardRects = rects }
+        }
         .onChange(of: model.isRevealed) { _, revealed in
             if !revealed { hoveredID = nil }
         }
@@ -83,6 +94,11 @@ struct DockStripView: View {
                     insertion: .scale(scale: 0.85, anchor: isLeft ? .leading : .trailing).combined(with: .opacity),
                     removal: .scale(scale: 0.8).combined(with: .opacity)
                 ))
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: CardRectsKey.self, value: [proxy.frame(in: .global)])
+                    }
+                )
             }
         }
         .padding(.vertical, Theme.panelPadding)
@@ -123,5 +139,14 @@ struct DockStripView: View {
         guard !model.isRevealed else { return 0 }
         let hidden = cardWidth - Theme.peek
         return isLeft ? -hidden : hidden
+    }
+}
+
+/// Collects every card's rectangle so the panel knows which parts of itself are solid.
+private struct CardRectsKey: PreferenceKey {
+    static let defaultValue: [CGRect] = []
+
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
+        value.append(contentsOf: nextValue())
     }
 }
