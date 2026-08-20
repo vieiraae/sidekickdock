@@ -22,13 +22,36 @@ final class Permissions: ObservableObject {
     func refresh() {
         hasScreenRecording = CGPreflightScreenCaptureAccess()
         hasAccessibility = AXIsProcessTrusted()
+        if hasScreenRecording { screenRecordingNeedsManualAdd = false }
     }
+
+    /// Set once a Screen Recording request has come back without a grant. macOS is then
+    /// supposed to have listed us under Screen & System Audio Recording, but that
+    /// registration is not reliable: observed on macOS 26 with a Developer ID build that was
+    /// registered with LaunchServices, `CGRequestScreenCaptureAccess()` returned false,
+    /// showed no prompt, and added no row — leaving the user staring at a list we were not
+    /// in. When that happens the only way through is to add the bundle by hand with the `+`
+    /// button, so the UI surfaces that route rather than dead-ending.
+    @Published private(set) var screenRecordingNeedsManualAdd = false
 
     func requestScreenRecording() {
         if !CGRequestScreenCaptureAccess() {
             open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+            screenRecordingNeedsManualAdd = true
         }
         refresh()
+    }
+
+    /// Opens Finder with the bundle selected, so the `+` file picker lands on it in one drag
+    /// or paste. `Bundle.main.bundleURL` is the running bundle, which is the one macOS wants
+    /// listed — pointing at anything else would grant a copy that is not the app running.
+    func revealAppInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    }
+
+    func copyAppPath() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(Bundle.main.bundleURL.path, forType: .string)
     }
 
     func requestAccessibility() {

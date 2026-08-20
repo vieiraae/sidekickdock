@@ -157,6 +157,14 @@ SidekickDock asks for two grants on first launch (System Settings → Privacy & 
 
 After granting Screen Recording for the first time, quit and relaunch the app so macOS hands over the new capture privileges.
 
+**If SidekickDock is missing from the Screen Recording list.** macOS does not reliably add an
+app to *Screen & System Audio Recording* when it asks: observed on macOS 26 with a Developer
+ID build that was registered with LaunchServices, `CGRequestScreenCaptureAccess()` returned
+false, showed no prompt, and added no row — so *Grant…* opened a list the app was not in.
+Switching to ScreenCaptureKit does not help; it fails the same way. When that happens, click
+**+** below the list and choose SidekickDock. The Permissions tab offers *Reveal App in
+Finder* and *Copy Path* to point the file picker at the running bundle.
+
 ## How it works
 
 | Layer | Responsibility |

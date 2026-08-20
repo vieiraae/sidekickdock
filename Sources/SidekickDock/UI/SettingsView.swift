@@ -92,6 +92,9 @@ struct SettingsView: View {
                     granted: permissions.hasScreenRecording,
                     action: permissions.requestScreenRecording
                 )
+                if permissions.screenRecordingNeedsManualAdd {
+                    manualAddHelp
+                }
                 permissionRow(
                     title: "Accessibility",
                     detail: "Required to bring a window forward when you click its preview.",
@@ -106,6 +109,27 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear { permissions.refresh() }
+    }
+
+    /// Shown only after a Screen Recording request has failed to grant. macOS does not always
+    /// add us to the Screen & System Audio Recording list when asked, and an empty-looking
+    /// list with no explanation is a dead end — so spell out the `+` route and make the
+    /// bundle trivial to point the file picker at.
+    private var manualAddHelp: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Not listed under Screen & System Audio Recording?")
+                .font(.callout.weight(.semibold))
+            Text("macOS does not always add an app to that list on request. Click **+** below the list, then choose SidekickDock.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("Reveal App in Finder", action: permissions.revealAppInFinder)
+                Button("Copy Path", action: permissions.copyAppPath)
+            }
+            .controlSize(.small)
+        }
+        .padding(.vertical, 4)
     }
 
     private func permissionRow(
