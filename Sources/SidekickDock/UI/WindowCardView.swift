@@ -20,8 +20,14 @@ struct WindowCardView: View {
     @State private var tileMenuWork: DispatchWorkItem?
     @State private var isPressed = false
 
+    private var preview: NSImage? { store.thumbnail(for: window) }
+
+    private var aspectRatio: CGFloat {
+        CardGeometry.aspectRatio(image: preview?.size, windowAspect: window.aspectRatio)
+    }
+
     private var height: CGFloat {
-        min(max(width / window.aspectRatio, 58), width * 1.35)
+        CardGeometry.height(width: width, aspectRatio: aspectRatio)
     }
 
     var body: some View {
@@ -88,7 +94,7 @@ struct WindowCardView: View {
             RoundedRectangle(cornerRadius: Theme.cardCorner, style: .continuous)
                 .fill(Color.black.opacity(0.28))
 
-            if let image = store.thumbnail(for: window) {
+            if let image = preview {
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)

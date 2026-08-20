@@ -44,12 +44,20 @@ actor ThumbnailEngine {
             guard window.frame.width > 1, window.frame.height > 1 else { continue }
             let scale = min(1.0, targetWidth / window.frame.width)
             let backing = scales[window.windowID] ?? 2
-            let pixelWidth = max(64, Int((window.frame.width * scale * backing).rounded()))
-            let pixelHeight = max(64, Int((window.frame.height * scale * backing).rounded()))
+            // Both dimensions are lifted by the same factor when either falls under the
+            // floor. Clamping them independently would hand back an image of a different
+            // shape than the window, which the card then has to crop or stretch to fit.
+            var pixelWidth = window.frame.width * scale * backing
+            var pixelHeight = window.frame.height * scale * backing
+            let floor: CGFloat = 64
+            if let lift = [floor / pixelWidth, floor / pixelHeight].max(), lift > 1 {
+                pixelWidth *= lift
+                pixelHeight *= lift
+            }
 
             let configuration = SCStreamConfiguration()
-            configuration.width = pixelWidth
-            configuration.height = pixelHeight
+            configuration.width = Int(pixelWidth.rounded())
+            configuration.height = Int(pixelHeight.rounded())
             configuration.showsCursor = false
             configuration.scalesToFit = true
             configuration.ignoreShadowsSingleWindow = true
