@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Borderless, non-activating panel that floats above regular windows on one display.
@@ -16,6 +17,7 @@ final class DockController {
     private var isBoosting = false
     private var visibleFrame: NSRect
     private var shrinkWorkItem: DispatchWorkItem?
+    private var contentHeightObserver: AnyCancellable?
     /// Nothing to show on this display at all.
     private var isEmpty = false
     /// The active window fills this display, so the resting sliver would sit on top of
@@ -59,6 +61,15 @@ final class DockController {
 
         updateFrame(for: screen)
         panel.orderFrontRegardless()
+
+        // The collapsed frame depends on the measured stack, which only exists after SwiftUI
+        // has laid out — and changes whenever a window is added, removed, or resized.
+        contentHeightObserver = model.$contentHeight
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                guard let self, !self.model.isRevealed else { return }
+                Task { @MainActor in self.applyFrame(revealed: false) }
+            }
     }
 
     // MARK: - Geometry
@@ -81,7 +92,20 @@ final class DockController {
     private func frame(revealed: Bool) -> NSRect {
         let width = revealed ? revealedWidth : collapsedWidth
         let x = Preferences.shared.edge == .left ? visibleFrame.minX : visibleFrame.maxX - width
-        return NSRect(x: x, y: visibleFrame.minY, width: width, height: visibleFrame.height)
+        let full = NSRect(x: x, y: visibleFrame.minY, width: width, height: visibleFrame.height)
+        guard !revealed else { return full }
+
+        // Collapsed, the panel hugs the card stack rather than running the whole height of
+        // the display. The panel is always hit-testable, so a full-height sliver swallowed
+        // every click along that edge — including the stretches above and below the cards
+        // where nothing is drawn, which left parts of the windows underneath unclickable.
+        // A little headroom keeps the hover lift and shadow from being clipped.
+        let content = min(model.contentHeight + 12, visibleFrame.height)
+        guard content > 0 else { return full }
+        return NSRect(x: x,
+                      y: visibleFrame.midY - content / 2,
+                      width: width,
+                      height: content)
     }
 
     private func applyFrame(revealed: Bool) {

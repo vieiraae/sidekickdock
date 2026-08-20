@@ -4,6 +4,11 @@ import SwiftUI
 @MainActor
 final class DockPanelModel: ObservableObject {
     @Published var isRevealed = false
+    /// Measured height of the card stack. The collapsed panel hugs this instead of running
+    /// the full height of the display, so the rest of the screen edge stays clickable.
+    /// Measured rather than computed: card heights follow each window's aspect ratio, so
+    /// recalculating the layout here would drift from what SwiftUI actually lays out.
+    @Published var contentHeight: CGFloat = 0
     let displayID: CGDirectDisplayID
 
     init(displayID: CGDirectDisplayID) {
@@ -78,6 +83,15 @@ struct DockStripView: View {
         }
         .padding(.vertical, Theme.panelPadding)
         .padding(isLeft ? .trailing : .leading, 22)
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { model.contentHeight = proxy.size.height }
+                    .onChange(of: proxy.size.height) { _, height in
+                        model.contentHeight = height
+                    }
+            }
+        )
         .rotation3DEffect(
             .degrees(tilt),
             axis: (x: 0, y: 1, z: 0),

@@ -6,6 +6,8 @@ A native macOS window switcher that tucks a strip of live window previews agains
 every display. Rest your pointer at the edge and it springs open; click a card and that window
 comes forward.
 
+https://github.com/user-attachments/assets/616cbe62-da24-4b7b-ad6a-c10285eee9cf
+
 Two deliberate differences from the built-in Stage Manager:
 
 - **No app groups.** Every window is its own card. Nothing is bundled or hidden behind a stack.
