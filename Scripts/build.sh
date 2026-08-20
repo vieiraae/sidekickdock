@@ -23,13 +23,17 @@ if [ -f "$ROOT/Resources/AppIcon.icns" ]; then
   /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP/Contents/Info.plist" 2>/dev/null || true
 fi
 
-IDENTITY="SidekickDock Self-Signed"
+# Release builds override these: a Developer ID identity and a real secure timestamp are
+# both required for notarisation. See Scripts/release.sh.
+IDENTITY="${SIGN_IDENTITY:-SidekickDock Self-Signed}"
+TIMESTAMP="${SIGN_TIMESTAMP:---timestamp=none}"
+
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
-  echo "==> Signing with '$IDENTITY' (grants persist across rebuilds)"
+  echo "==> Signing with '$IDENTITY'"
   codesign --force --sign "$IDENTITY" \
     --identifier com.sidekickdock.app \
     --options runtime \
-    --timestamp=none "$APP"
+    "$TIMESTAMP" "$APP"
 else
   echo "==> Signing ad-hoc — macOS will re-ask for permissions after every rebuild."
   echo "    Run ./Scripts/create-signing-identity.sh once to avoid that."

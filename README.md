@@ -115,6 +115,37 @@ grants persist.
 
 `build.sh` compiles with SwiftPM, assembles a proper `.app` bundle from `Resources/Info.plist`, and signs it with that identity when it is available.
 
+## Publishing
+
+```bash
+./Scripts/release.sh --dry-run    # everything except submitting to Apple
+./Scripts/release.sh 1.1          # set the version, notarise, and package a disk image
+```
+
+Distribution is **Developer ID with notarisation**, not the Mac App Store. The app resolves
+private SkyLight symbols and drives other applications through the Accessibility API, and
+neither survives the sandbox the store requires. Notarisation itself is an automated malware
+scan rather than a review, so the private symbols are not an obstacle there.
+
+`release.sh` finds your *Developer ID Application* certificate, builds with the hardened
+runtime and a secure timestamp — both preconditions for notarisation — then notarises and
+staples the app, packages it into a signed disk image, and notarises that too. The app gets
+its own ticket rather than only the image, so a first launch on a machine that cannot reach
+Apple still works. No entitlements file is needed: the app is not sandboxed, and both
+permissions it uses are granted by the user at run time.
+
+Credentials are stored once, using an app-specific password from appleid.apple.com:
+
+```bash
+xcrun notarytool store-credentials sidekickdock-notary \
+  --apple-id you@example.com --team-id <TEAM_ID> --password xxxx-xxxx-xxxx-xxxx
+```
+
+One consequence of releasing: macOS keys Screen Recording and Accessibility grants to the
+signature, so the first Developer ID build is a different app as far as it is concerned and
+will ask for both again — on your own Mac as well. Every release after that keeps its grants,
+because the Developer ID identity does not change.
+
 ## Permissions
 
 SidekickDock asks for two grants on first launch (System Settings → Privacy & Security):
