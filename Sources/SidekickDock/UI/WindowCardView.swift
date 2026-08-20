@@ -58,10 +58,7 @@ struct WindowCardView: View {
             .overlay(alignment: .topLeading) {
                 if isRevealed && isHovering {
                     trafficLights
-                        // Tuned against the tilted card, not the layout frame: the strip's
-                        // 3D rotation shears the card away from its own bounds, so a plain
-                        // inset leaves the cluster hanging off the visual corner.
-                        .padding(.leading, 18)
+                        .padding(.leading, trafficLightInset)
                         .padding(.top, 2)
                         .transition(.opacity)
                 }
@@ -329,6 +326,16 @@ struct WindowCardView: View {
         }
         return StrokeStyle(lineWidth: window.isActive ? 1.8 : 1)
     }
+
+    /// Horizontal inset for the traffic lights, measured rather than derived.
+    ///
+    /// The cluster is positioned against the layout frame, but the strip's 3D rotation
+    /// shears the card away from those bounds, so the visible top-left corner is not where
+    /// the frame says it is. Crucially the tilt is *mirrored* for the right-hand strip, so
+    /// the correction has to mirror too: screenshots put the visible corner about 9.5pt
+    /// inside the frame on the left strip and about 13pt outside it on the right, and both
+    /// values here land the cluster the same ~8.5pt inside the corner it belongs to.
+    private var trafficLightInset: CGFloat { isLeftEdge ? 18 : -8 }
 
     private var titleAlignment: Alignment { .bottom }
 

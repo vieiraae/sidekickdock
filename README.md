@@ -23,7 +23,7 @@ A native macOS window switcher that looks and feels like Stage Manager — with 
 - **Traffic lights on every card** when the strip is open: close, minimise, and full screen. Resting on the green button opens a **Move & Resize** menu — halves and quarters, plus Fill & Arrange layouts that tile the card's window together with its neighbours on that display.
 - **⌘Tab replacement.** The dock takes over the system application switcher and cycles *windows* instead of app groups, reusing the previews it already holds. ⌘⇧Tab reverses, arrows move, Escape cancels, hover selects, click picks. The overlay always appears on the primary display, grouped by display — external screens first, primary last — in the same order as the strips. It only draws after 150ms, so a quick ⌘Tab-and-release switches without a flash. Turn it off in Settings to get the system switcher back.
 - Right-click a card for *Bring to Front*, *Minimise*, *Close Window*, and *Quit App*.
-- Menu-bar item with *Reveal Dock*, *Refresh Previews*, and *Settings*.
+- Menu-bar item with *Reveal Dock* and *Settings*.
 - Settings: screen edge (left/right), preview size, reveal delay, window titles, minimised-window inclusion, ⌘Tab replacement, launch at login.
 - **Launch at login** via `SMAppService.mainApp`. The toggle reads its state back from the
   system on every appearance rather than caching it, so disabling the login item in System
@@ -60,6 +60,13 @@ Three ordering rules in `SkyLight.swift` are load-bearing, all established by me
 
 Switching between two windows of one app also names the window losing focus, so the window
 server can handle the change without involving the app.
+
+Even with all of that right, the window server sometimes accepts the focus request, reports
+success, and does not raise the window — the click looks like it did nothing. It is not a
+timing problem: a window that has not come forward 120ms later is still buried a second
+later. So `WindowActivator` checks the outcome instead of trusting the return code, and
+falls back to `AXRaise` on the rare occasions the check fails. That is the one place the
+`AXRaise` side effect is worth accepting, because the alternative is a dropped click.
 
 `NSRunningApplication.unhide()` is called only when the app is genuinely hidden. It orders
 every window of an app forward, on every display, so calling it unconditionally — as a

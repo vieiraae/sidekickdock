@@ -460,14 +460,27 @@ final class WindowStore: ObservableObject {
         guard !ids.isEmpty else { return }
 
         let width = Preferences.shared.cardWidth
-        let images = await engine.capture(windowIDs: ids, targetWidth: width)
+        // Resolved here rather than inside the engine: NSScreen belongs to the main actor.
+        var scales: [CGWindowID: CGFloat] = [:]
+        for id in ids {
+            guard let display = displayAssignments[id],
+                  let screen = ScreenGeometry.screen(for: display)
+            else { continue }
+            scales[id] = screen.backingScaleFactor
+        }
+
+        let images = await engine.capture(windowIDs: ids, targetWidth: width, scales: scales)
         guard !images.isEmpty else { return }
 
         var merged = thumbnails
         for (id, cgImage) in images {
+            // The point size must undo the same scale the capture applied, or the preview
+            // draws at the wrong size on a non-Retina display.
+            let backing = scales[id] ?? 2
             merged[id] = NSImage(
                 cgImage: cgImage,
-                size: NSSize(width: cgImage.width / 2, height: cgImage.height / 2)
+                size: NSSize(width: CGFloat(cgImage.width) / backing,
+                             height: CGFloat(cgImage.height) / backing)
             )
         }
         thumbnails = merged

@@ -23,7 +23,16 @@ actor ThumbnailEngine {
     }
 
     /// Captures previews for the requested window IDs. Returns only the ones that succeeded.
-    func capture(windowIDs: [CGWindowID], targetWidth: CGFloat) async -> [CGWindowID: CGImage] {
+    ///
+    /// `scales` gives the backing scale of the display each window sits on. Capturing
+    /// everything at 2x looks identical on a Retina screen and wastes four times the pixels
+    /// on a 1x one — which is easy to miss, because the developer's own laptop display is
+    /// usually the Retina one.
+    func capture(
+        windowIDs: [CGWindowID],
+        targetWidth: CGFloat,
+        scales: [CGWindowID: CGFloat]
+    ) async -> [CGWindowID: CGImage] {
         guard !windowIDs.isEmpty else { return [:] }
         guard let content = try? await shareableContent() else { return [:] }
 
@@ -34,8 +43,9 @@ actor ThumbnailEngine {
         for window in targets {
             guard window.frame.width > 1, window.frame.height > 1 else { continue }
             let scale = min(1.0, targetWidth / window.frame.width)
-            let pixelWidth = max(64, Int((window.frame.width * scale * 2).rounded()))
-            let pixelHeight = max(64, Int((window.frame.height * scale * 2).rounded()))
+            let backing = scales[window.windowID] ?? 2
+            let pixelWidth = max(64, Int((window.frame.width * scale * backing).rounded()))
+            let pixelHeight = max(64, Int((window.frame.height * scale * backing).rounded()))
 
             let configuration = SCStreamConfiguration()
             configuration.width = pixelWidth

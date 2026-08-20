@@ -9,9 +9,28 @@ enum WindowActivator {
 
     private static let queue = DispatchQueue(label: "dock.window-activator", qos: .userInitiated)
 
+    /// Identifies the most recent activation request. A correction belonging to an older
+    /// request is dropped, so a retry can never fight a window the user has since clicked.
+    private static let generationLock = NSLock()
+    private static var generation = 0
+
+    private static func nextGeneration() -> Int {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        generation += 1
+        return generation
+    }
+
+    private static func isCurrent(_ value: Int) -> Bool {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return generation == value
+    }
+
     // MARK: - Actions
 
     static func activate(_ window: ManagedWindow, onUnresolved: (@Sendable () -> Void)? = nil) {
+        let generation = nextGeneration()
         let pid = window.pid
         // Only when actually hidden: unhide() orders every window of the app forward, on
         // every display, which is precisely the side effect being avoided here.
@@ -47,7 +66,10 @@ enum WindowActivator {
             // brings it to the front of its own display, whereas AXRaise asks the *app* to
             // raise it — and apps run their own window ordering in response, which is how a
             // click on one display ends up raising a sibling window on another.
-            if SkyLight.focusWithoutRaising(pid: pid, windowID: id, replacing: previouslyFocused) { return }
+            if SkyLight.focusWithoutRaising(pid: pid, windowID: id, replacing: previouslyFocused) {
+                confirmRaise(of: element, pid: pid, windowID: id, generation: generation)
+                return
+            }
 
             // Without the window server, raising and activating is all that is left.
             DebugLog.log("activate: SkyLight unavailable, falling back to app activation")
@@ -56,6 +78,72 @@ enum WindowActivator {
                 NSRunningApplication(processIdentifier: pid)?.activate(options: [])
             }
         }
+    }
+
+    /// Checks that the window really did come forward, and corrects it when it did not.
+    ///
+    /// The window server accepts the focus request and reports success even when it does not
+    /// raise the window. Measured across runs it failed anywhere between 1 click in 12 and 8
+    /// in 16, depending on the app and on which window was in front; nothing in the return
+    /// codes or the ordering of the calls distinguishes a failure from a success. The only
+    /// reliable signal is the result, so the result is what gets checked.
+    ///
+    /// A failure never repairs itself: measured at 120ms, 300ms, 600ms and 1s after the
+    /// request, a window that had not come forward was still buried at every one of them.
+    /// Repeating the same window-server call does not help either — it was tried first and
+    /// corrected nothing — so the correction goes straight to `AXRaise`.
+    ///
+    /// `AXRaise` is otherwise avoided here, because asking the *app* to raise a window makes
+    /// it reorder its own windows on other displays. It is the right trade only because the
+    /// alternative is a click that visibly does nothing.
+    private static func confirmRaise(
+        of element: AXUIElement,
+        pid: pid_t,
+        windowID: CGWindowID,
+        generation: Int
+    ) {
+        queue.asyncAfter(deadline: .now() + 0.12) {
+            guard isCurrent(generation), isBuried(windowID: windowID, pid: pid) else { return }
+            DebugLog.log("activate: #\(windowID) did not come forward, raising it")
+            AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        }
+    }
+
+    /// True when another app's window is drawn over this one.
+    ///
+    /// Only windows belonging to *other* apps count. An app's own windows sitting above the
+    /// target — a sheet, a dialog, a floating palette — are its own business, and treating
+    /// them as failures would mean re-raising the parent out from under its own dialog.
+    private static func isBuried(windowID: CGWindowID, pid: pid_t) -> Bool {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]]
+        else { return false }
+
+        func bounds(_ entry: [String: Any]) -> CGRect? {
+            guard let raw = entry[kCGWindowBounds as String] as? NSDictionary else { return nil }
+            return CGRect(dictionaryRepresentation: raw)
+        }
+
+        guard let target = list.first(where: { $0[kCGWindowNumber as String] as? CGWindowID == windowID }),
+              let frame = bounds(target), !frame.isEmpty
+        else {
+            // Not on screen at all: minimised, closed, or moved to another Space while the
+            // check was in flight. Nothing to correct.
+            return false
+        }
+
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        for entry in list {
+            // The list is front to back, so reaching the target means nothing covers it.
+            if entry[kCGWindowNumber as String] as? CGWindowID == windowID { return false }
+            guard entry[kCGWindowLayer as String] as? Int == 0,
+                  let otherPID = entry[kCGWindowOwnerPID as String] as? pid_t,
+                  otherPID != pid, otherPID != ownPID,
+                  let other = bounds(entry), other.intersects(frame)
+            else { continue }
+            return true
+        }
+        return false
     }
 
     static func minimize(_ window: ManagedWindow) {

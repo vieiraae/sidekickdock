@@ -79,7 +79,6 @@ enum SkyLight {
         // display. Naming the outgoing and incoming windows explicitly keeps the change
         // inside the window server, where it belongs.
         let alreadyFront = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
-        DebugLog.log("focus #\(windowID) pid=\(pid) previous=\(previous.map(String.init) ?? "-") alreadyFront=\(alreadyFront)")
         if alreadyFront, let previous, previous != windowID {
             DebugLog.log("SkyLight: same-app focus #\(previous) -> #\(windowID)")
             postWindowFocusChange(psn: &psn, from: previous, to: windowID)

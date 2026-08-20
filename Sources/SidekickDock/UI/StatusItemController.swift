@@ -53,10 +53,6 @@ final class StatusItemController {
         reveal.target = self
         menu.addItem(reveal)
 
-        let refresh = NSMenuItem(title: "Refresh Previews", action: #selector(refreshPreviews), keyEquivalent: "")
-        refresh.target = self
-        menu.addItem(refresh)
-
         menu.addItem(.separator())
 
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
@@ -73,7 +69,6 @@ final class StatusItemController {
     }
 
     @objc private func revealDock() { DockManager.shared.revealUnderPointer() }
-    @objc private func refreshPreviews() { WindowStore.shared.refreshNow() }
     @objc private func openSettings() { SettingsWindowController.shared.present() }
     @objc private func quit() { NSApp.terminate(nil) }
 }
