@@ -50,21 +50,16 @@ final class SwitcherController: ObservableObject {
         }
         guard !items.isEmpty else { return }
         hasMoved = true
-        guard let position = recency.firstIndex(of: selection) else {
-            // Selection outside the recency list should be impossible; fall back to spatial
-            // order rather than refusing to move.
-            stepSpatially(by: delta)
-            return
-        }
-        let next = ((position + delta) % recency.count + recency.count) % recency.count
-        selection = recency[next]
+        selection = SwitcherIndex.stepInRecency(
+            selection: selection, by: delta, recency: recency, count: items.count
+        )
     }
 
     /// Arrow traversal: walks the grid as drawn, because arrows are about position.
     func stepSpatially(by delta: Int) {
         guard isEngaged, !items.isEmpty else { return }
         hasMoved = true
-        selection = ((selection + delta) % items.count + items.count) % items.count
+        selection = SwitcherIndex.wrap(selection, by: delta, count: items.count)
     }
 
     func commit() {
@@ -99,7 +94,7 @@ final class SwitcherController: ObservableObject {
 
     /// Maps a position inside a display group onto the flattened selection index.
     func flatIndex(group: Int, item: Int) -> Int {
-        groups.prefix(group).reduce(item) { $0 + $1.windows.count }
+        SwitcherIndex.flatIndex(group: group, item: item, groupCounts: groups.map(\.windows.count))
     }
 
     // MARK: - Lifecycle

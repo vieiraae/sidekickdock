@@ -125,15 +125,23 @@ enum ScreenGeometry {
     }
 
     /// Converts an AppKit (bottom-left origin) rect into CoreGraphics (top-left origin) space.
+    static func flip(_ frame: CGRect, globalHeight: CGFloat) -> CGRect {
+        CGRect(
+            x: frame.origin.x,
+            y: globalHeight - frame.origin.y - frame.height,
+            width: frame.width,
+            height: frame.height
+        )
+    }
+
+    /// Converts an AppKit (bottom-left origin) rect into CoreGraphics (top-left origin) space.
     static func cgFrame(of screen: NSScreen) -> CGRect {
-        let f = screen.frame
-        return CGRect(x: f.origin.x, y: globalHeight - f.origin.y - f.height, width: f.width, height: f.height)
+        flip(screen.frame, globalHeight: globalHeight)
     }
 
     /// The usable area of a display — excluding the menu bar and Dock — in CoreGraphics space.
     static func cgVisibleFrame(of screen: NSScreen) -> CGRect {
-        let f = screen.visibleFrame
-        return CGRect(x: f.origin.x, y: globalHeight - f.origin.y - f.height, width: f.width, height: f.height)
+        flip(screen.visibleFrame, globalHeight: globalHeight)
     }
 
     static func displayID(of screen: NSScreen) -> CGDirectDisplayID {
@@ -146,26 +154,39 @@ enum ScreenGeometry {
 
     /// Picks the display that holds the largest slice of the window.
     static func owningDisplay(for frame: CGRect) -> CGDirectDisplayID? {
+        owningDisplay(for: frame, among: NSScreen.screens.map { (displayID(of: $0), cgFrame(of: $0)) })
+    }
+
+    /// The display choice on its own, in CoreGraphics space, so it can be exercised without
+    /// a real screen arrangement.
+    static func owningDisplay(
+        for frame: CGRect,
+        among displays: [(id: CGDirectDisplayID, frame: CGRect)]
+    ) -> CGDirectDisplayID? {
         var best: (id: CGDirectDisplayID, area: CGFloat)?
-        for screen in NSScreen.screens {
-            let overlap = cgFrame(of: screen).intersection(frame)
+        for display in displays {
+            let overlap = display.frame.intersection(frame)
             let area = overlap.isNull ? 0 : overlap.width * overlap.height
             guard area > 0 else { continue }
             if best == nil || area > best!.area {
-                best = (displayID(of: screen), area)
+                best = (display.id, area)
             }
         }
         if let best { return best.id }
 
-        // Fully off-screen: fall back to the nearest display rather than whichever display
-        // happens to have focus, so a window never jumps to the wrong strip.
+        // Fully off-screen, or degenerate: fall back to the nearest display rather than
+        // whichever display happens to have focus, so a window never jumps to the wrong strip.
+        // Distance is measured to the display's edges, not its centre — a zero-sized window
+        // sitting inside a large display is nearest to *that* display, however far its middle
+        // happens to be.
         let center = CGPoint(x: frame.midX, y: frame.midY)
         var nearest: (id: CGDirectDisplayID, distance: CGFloat)?
-        for screen in NSScreen.screens {
-            let rect = cgFrame(of: screen)
-            let distance = hypot(rect.midX - center.x, rect.midY - center.y)
+        for display in displays {
+            let dx = max(display.frame.minX - center.x, 0, center.x - display.frame.maxX)
+            let dy = max(display.frame.minY - center.y, 0, center.y - display.frame.maxY)
+            let distance = hypot(dx, dy)
             if nearest == nil || distance < nearest!.distance {
-                nearest = (displayID(of: screen), distance)
+                nearest = (display.id, distance)
             }
         }
         return nearest?.id

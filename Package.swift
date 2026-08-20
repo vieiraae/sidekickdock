@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "SidekickDock",
             path: "Sources/SidekickDock"
+        ),
+        .testTarget(
+            name: "SidekickDockTests",
+            dependencies: ["SidekickDock"],
+            path: "Tests/SidekickDockTests"
         )
     ]
 )

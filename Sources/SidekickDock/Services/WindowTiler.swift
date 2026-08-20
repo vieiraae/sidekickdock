@@ -123,18 +123,22 @@ enum WindowTiler {
         }
     }
 
+    /// Scales a unit pane onto a usable area, both with a top-left origin.
+    static func frame(for unit: CGRect, in area: CGRect) -> CGRect {
+        CGRect(
+            x: area.minX + unit.minX * area.width,
+            y: area.minY + unit.minY * area.height,
+            width: unit.width * area.width,
+            height: unit.height * area.height
+        )
+    }
+
     private static func place(_ window: ManagedWindow, in unit: CGRect) {
         guard let display = ScreenGeometry.owningDisplay(for: window.frame),
               let screen = ScreenGeometry.screen(for: display)
         else { return }
 
         let area = ScreenGeometry.cgVisibleFrame(of: screen)
-        let target = CGRect(
-            x: area.minX + unit.minX * area.width,
-            y: area.minY + unit.minY * area.height,
-            width: unit.width * area.width,
-            height: unit.height * area.height
-        )
-        WindowActivator.setFrame(target, for: window)
+        WindowActivator.setFrame(frame(for: unit, in: area), for: window)
     }
 }

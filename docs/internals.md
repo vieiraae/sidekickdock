@@ -116,6 +116,27 @@ a fresh scan and capture. Idle CPU is now ~0.5%.
 Note when profiling that `ps %CPU` is a lifetime average while `top` is instantaneous;
 comparing the two produces phantom regressions.
 
+## Tests
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
+
+The `DEVELOPER_DIR` prefix is needed because XCTest ships with Xcode, not with the Command
+Line Tools; without it the toolchain reports *no such module 'XCTest'*. It is only needed for
+the tests — building and releasing the app works with the Command Line Tools alone.
+
+The suite covers the arithmetic that has regressed most often and is hardest to see going
+wrong: the tiling geometry (`WindowTiler.frame(for:in:)`), the AppKit ↔ CoreGraphics flip and
+display ownership (`ScreenGeometry`), the switcher's wrap-around and most-recently-used
+traversal (`SwitcherIndex`), and recency ordering (`UsageHistory`).
+
+Each of those was reachable only through a real screen arrangement, so the pure arithmetic was
+lifted out into functions that take their world as arguments. That refactor immediately found a
+bug: a zero-area window sitting *inside* the external display was assigned to the primary,
+because the off-screen fallback compared distances to display **centres**. It now measures
+distance to the display's edges, which is zero for a display that contains the point.
+
 ## Publishing
 
 ```bash
