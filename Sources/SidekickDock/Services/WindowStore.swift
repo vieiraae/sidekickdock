@@ -519,11 +519,14 @@ final class WindowStore: ObservableObject {
             // The point size must undo the same scale the capture applied, or the preview
             // draws at the wrong size on a non-Retina display.
             let backing = scales[id] ?? 2
-            merged[id] = NSImage(
-                cgImage: cgImage,
-                size: NSSize(width: CGFloat(cgImage.width) / backing,
-                             height: CGFloat(cgImage.height) / backing)
-            )
+            let size = NSSize(width: CGFloat(cgImage.width) / backing,
+                              height: CGFloat(cgImage.height) / backing)
+            let crop = CardGeometry.cropFraction(image: size, width: CGFloat(Preferences.shared.cardWidth))
+            if crop > 0.02 {
+                DebugLog.log(String(format: "preview: #%d %.0fx%.0f will be cropped by %.0f%%",
+                                    id, size.width, size.height, crop * 100))
+            }
+            merged[id] = NSImage(cgImage: cgImage, size: size)
         }
         thumbnails = merged
     }

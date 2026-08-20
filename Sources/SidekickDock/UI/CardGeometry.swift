@@ -26,4 +26,32 @@ enum CardGeometry {
         guard aspectRatio > 0 else { return width * maxHeightRatio }
         return min(max(width / aspectRatio, minHeight), width * maxHeightRatio)
     }
+
+    /// The card a window of this shape gets, fitted inside the strip's width and the height cap.
+    ///
+    /// A tall window needs more height than the cap allows, and a card draws its preview `.fill`,
+    /// so holding the width fixed would cut the bottom off the page — 22% of it for a 500x867
+    /// browser window. Stage Manager itself never cuts a window: it keeps the shape and lets a
+    /// tall window take a slimmer card, which is what happens here. Only a window wider than
+    /// `width / minHeight` is still cropped, because preserving its shape would need a card
+    /// wider than the strip.
+    static func size(width: CGFloat, aspectRatio: CGFloat) -> CGSize {
+        let height = height(width: width, aspectRatio: aspectRatio)
+        guard aspectRatio > 0 else { return CGSize(width: width, height: height) }
+        return CGSize(width: min(width, height * aspectRatio), height: height)
+    }
+
+    /// How much of the picture the card cuts off, 0 for none and 0.25 for a quarter.
+    ///
+    /// A card draws its preview `.fill`, so whenever the clamps above stop it from taking the
+    /// picture's own shape the difference is cut away rather than letterboxed. This says by
+    /// how much, so a crop can be measured instead of guessed at.
+    static func cropFraction(image: CGSize, width: CGFloat) -> CGFloat {
+        guard image.width > 0, image.height > 0, width > 0 else { return 0 }
+        let aspect = image.width / image.height
+        let card = size(width: width, aspectRatio: aspect)
+        guard card.width > 0, card.height > 0 else { return 0 }
+        let cardAspect = card.width / card.height
+        return abs(cardAspect - aspect) / max(cardAspect, aspect)
+    }
 }

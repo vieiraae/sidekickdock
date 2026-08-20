@@ -52,4 +52,33 @@ final class CardGeometryTests: XCTestCase {
         XCTAssertEqual(CardGeometry.height(width: width, aspectRatio: 0),
                        width * CardGeometry.maxHeightRatio)
     }
+
+    func testASquareEnoughPictureIsNotCropped() {
+        let crop = CardGeometry.cropFraction(image: CGSize(width: 1600, height: 1000), width: 184)
+        XCTAssertEqual(crop, 0, accuracy: 0.0001)
+    }
+
+    func testATallPictureIsNotCroppedBecauseTheCardNarrows() {
+        let crop = CardGeometry.cropFraction(image: CGSize(width: 800, height: 1600), width: 184)
+        XCTAssertEqual(crop, 0, accuracy: 0.0001)
+    }
+
+    func testATallWindowGetsANarrowerCardOfItsOwnShape() {
+        // The 500x867 browser window that was losing 22% of its page.
+        let size = CardGeometry.size(width: 184, aspectRatio: 500 / 867)
+        XCTAssertEqual(size.height, 184 * CardGeometry.maxHeightRatio, accuracy: 0.01)
+        XCTAssertLessThan(size.width, 184)
+        XCTAssertEqual(size.width / size.height, 500 / 867, accuracy: 0.001)
+    }
+
+    func testAnOrdinaryWindowKeepsTheFullStripWidth() {
+        let size = CardGeometry.size(width: 184, aspectRatio: 1600 / 1000)
+        XCTAssertEqual(size.width, 184, accuracy: 0.01)
+        XCTAssertEqual(size.height, 184 / 1.6, accuracy: 0.01)
+    }
+
+    func testAVeryWidePictureIsCroppedByTheMinimumHeight() {
+        let crop = CardGeometry.cropFraction(image: CGSize(width: 2560, height: 200), width: 184)
+        XCTAssertGreaterThan(crop, 0.1)
+    }
 }

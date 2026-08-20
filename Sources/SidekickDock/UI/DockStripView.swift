@@ -57,7 +57,10 @@ struct DockStripView: View {
     /// card shares one vanishing point. That is what produces the real thing's signature
     /// look: cards further from the centre are progressively more sheared.
     private var stack: some View {
-        VStack(alignment: isLeft ? .leading : .trailing, spacing: Theme.cardSpacing) {
+        // Cards are flush on the side away from the screen edge. A tall window's card is
+        // narrower than the rest, and it is the far edge that shows while the strip is
+        // collapsed — aligning there keeps every sliver the same width.
+        VStack(alignment: isLeft ? .trailing : .leading, spacing: Theme.cardSpacing) {
             ForEach(windows) { window in
                 WindowCardView(
                     window: window,
@@ -65,6 +68,7 @@ struct DockStripView: View {
                     showTitle: prefs.showTitles,
                     isLeftEdge: isLeft,
                     isRevealed: model.isRevealed,
+                    isHovered: hoveredID == window.id,
                     isDimmed: hoveredID != nil && hoveredID != window.id
                 ) { hovering in
                     if hovering {
@@ -98,6 +102,12 @@ struct DockStripView: View {
             anchor: .center,
             perspective: Theme.perspective
         )
+        // A backstop for the whole stack: if a card's own exit never arrives — it can be
+        // missed when the layout shifts under a still pointer — leaving the stack still
+        // clears the hover.
+        .onContinuousHover { phase in
+            if case .ended = phase { hoveredID = nil }
+        }
         .animation(Theme.reveal, value: model.isRevealed)
     }
 

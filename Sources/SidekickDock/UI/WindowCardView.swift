@@ -9,13 +9,17 @@ struct WindowCardView: View {
     let showTitle: Bool
     let isLeftEdge: Bool
     let isRevealed: Bool
+    /// True when the pointer is on this card. Held by the strip rather than by the card:
+    /// a card that tracked its own hover could be left stuck at hover size, because the exit
+    /// event never arrives if the card moves out from under a stationary pointer — which is
+    /// exactly what happens when a window is minimised from the card's own controls.
+    let isHovered: Bool
     /// True when another card in the strip is hovered, so this one recedes slightly.
     let isDimmed: Bool
     let onHoverChange: (Bool) -> Void
     let onActivate: () -> Void
 
     @EnvironmentObject private var store: WindowStore
-    @State private var isHovering = false
     /// Pending reveal of the Move & Resize menu, cancelled if the pointer moves on first.
     @State private var tileMenuWork: DispatchWorkItem?
     @State private var isPressed = false
@@ -26,17 +30,22 @@ struct WindowCardView: View {
         CardGeometry.aspectRatio(image: preview?.size, windowAspect: window.aspectRatio)
     }
 
-    private var height: CGFloat {
-        CardGeometry.height(width: width, aspectRatio: aspectRatio)
+    private var size: CGSize {
+        CardGeometry.size(width: width, aspectRatio: aspectRatio)
     }
+
+    /// A tall window's card is narrower than the strip so its picture is never cut.
+    private var cardWidth: CGFloat { size.width }
+
+    private var height: CGFloat { size.height }
 
     var body: some View {
         card
             .scaleEffect(scale, anchor: isLeftEdge ? .leading : .trailing)
             .offset(x: slideIn)
-            .opacity(isDimmed && !isHovering ? 0.72 : 1)
-            .zIndex(isHovering ? 1 : 0)
-            .animation(Theme.hover, value: isHovering)
+            .opacity(isDimmed && !isHovered ? 0.72 : 1)
+            .zIndex(isHovered ? 1 : 0)
+            .animation(Theme.hover, value: isHovered)
             .animation(Theme.hover, value: isDimmed)
             .animation(Theme.hover, value: isPressed)
             .contentShape(Rectangle())
@@ -55,14 +64,13 @@ struct WindowCardView: View {
                     }
             )
             .onHover { hovering in
-                isHovering = hovering
                 onHoverChange(hovering)
             }
             .help(helpText)
             // Layered after the card's gesture so a click on a light is handled by the light
             // and never falls through to activation.
             .overlay(alignment: .topLeading) {
-                if isRevealed && isHovering {
+                if isRevealed && isHovered {
                     trafficLights
                         .padding(.leading, trafficLightInset)
                         .padding(.top, 2)
@@ -99,20 +107,20 @@ struct WindowCardView: View {
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: width, height: height)
+                    .frame(width: cardWidth, height: height)
                     .clipped()
             } else if let icon = window.appIcon {
                 Image(nsImage: icon)
                     .resizable()
                     .frame(width: 40, height: 40)
-                    .frame(width: width, height: height)
+                    .frame(width: cardWidth, height: height)
                     .opacity(0.65)
             }
 
             sheen
             appBadge.padding(7)
         }
-        .frame(width: width, height: height)
+        .frame(width: cardWidth, height: height)
         .clipShape(RoundedRectangle(cornerRadius: Theme.cardCorner, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Theme.cardCorner, style: .continuous)
@@ -123,15 +131,15 @@ struct WindowCardView: View {
         // from the screen edge, which is what sells the tilt.
         .shadow(color: .black.opacity(0.28), radius: 5, y: 3)
         .shadow(
-            color: .black.opacity(isHovering ? 0.5 : 0.34),
-            radius: isHovering ? 26 : 16,
-            x: (isLeftEdge ? 1 : -1) * (isHovering ? 14 : 9),
-            y: isHovering ? 14 : 9
+            color: .black.opacity(isHovered ? 0.5 : 0.34),
+            radius: isHovered ? 26 : 16,
+            x: (isLeftEdge ? 1 : -1) * (isHovered ? 14 : 9),
+            y: isHovered ? 14 : 9
         )
         .overlay(alignment: titleAlignment) {
             // Not while collapsed: the chip is laid out against the card, and the panel is
             // then only as wide as the sliver, so the title is clipped to a few characters.
-            if showTitle && isHovering && isRevealed {
+            if showTitle && isHovered && isRevealed {
                 titleChip
                     .fixedSize()
                     .offset(y: 26)
@@ -160,7 +168,7 @@ struct WindowCardView: View {
             .font(.system(size: 11, weight: .medium))
             .lineLimit(1)
             .truncationMode(.middle)
-            .frame(maxWidth: width * 1.2)
+            .frame(maxWidth: cardWidth * 1.2)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background {
@@ -202,7 +210,7 @@ struct WindowCardView: View {
         }
         .onHover { hovering in
             // The cluster sits inside the card, so its own hover must not read as leaving.
-            if hovering { isHovering = true }
+            if hovering { onHoverChange(true) }
         }
     }
 
@@ -253,7 +261,7 @@ struct WindowCardView: View {
             .contentShape(Circle())
             .onHover { hovering in
                 // The cluster's own hover must not read as leaving the card.
-                if hovering { isHovering = true }
+                if hovering { onHoverChange(true) }
                 guard control == .fullScreen else { return }
                 if hovering {
                     // macOS waits before revealing its own Move & Resize menu; opening
@@ -289,13 +297,13 @@ struct WindowCardView: View {
 
     private var scale: CGFloat {
         if isPressed { return 0.97 }
-        if isHovering { return 1.06 }
+        if isHovered { return 1.06 }
         return isDimmed ? 0.97 : 1
     }
 
     /// Hovered cards step in from the edge, as though lifting off the stack.
     private var slideIn: CGFloat {
-        guard isHovering else { return 0 }
+        guard isHovered else { return 0 }
         return isLeftEdge ? 8 : -8
     }
 
@@ -316,7 +324,7 @@ struct WindowCardView: View {
                 endPoint: .bottom
             )
         }
-        let top = isHovering ? 0.34 : 0.18
+        let top = isHovered ? 0.34 : 0.18
         return LinearGradient(
             colors: [Color.white.opacity(top), Color.white.opacity(0.05)],
             startPoint: .top,
