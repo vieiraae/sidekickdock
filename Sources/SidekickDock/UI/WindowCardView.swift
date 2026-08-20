@@ -149,12 +149,17 @@ struct WindowCardView: View {
     }
 
     /// A faint diagonal highlight, as if a light source sits above the angled card.
+    ///
+    /// The *direction* mirrors with the edge, but the strength must not: it was a third as
+    /// strong on the right from the very first commit, and since this shading is most of what
+    /// makes a card read as tilted, a right-hand dock looked like it sat at a shallower angle
+    /// than a left-hand one even though both are rotated by exactly the same degrees.
     private var sheen: some View {
         LinearGradient(
             colors: [
-                Color.white.opacity(isLeftEdge ? 0.14 : 0.04),
+                Color.white.opacity(0.14),
                 Color.white.opacity(0.02),
-                Color.black.opacity(isLeftEdge ? 0.10 : 0.02)
+                Color.black.opacity(0.10)
             ],
             startPoint: isLeftEdge ? .topTrailing : .topLeading,
             endPoint: isLeftEdge ? .bottomLeading : .bottomTrailing
