@@ -75,9 +75,14 @@ enum WindowEnumerator {
                 window = window.markingActive()
                 seenFrontWindow = true
             }
-            claimed.insert(window.id)
             results.append(window)
         }
+
+        // Menus, popovers and Chromium's address-bar suggestion list are windows as far as
+        // CoreGraphics is concerned, and would otherwise show up as duplicates of the window
+        // they belong to.
+        results = WindowSubroles.filtering(results)
+        claimed = Set(results.map(\.id))
 
         guard includeMinimized else { return Snapshot(windows: results) }
 
