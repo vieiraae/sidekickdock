@@ -120,16 +120,37 @@ enum WindowEnumerator {
     ///
     /// Deliberately cheap — a single window-list read, no Accessibility probing — because it
     /// runs either side of a capture pass to check the subject held still.
+    ///
+    /// Asks the window server about only the requested IDs rather than copying the whole
+    /// on-screen list and filtering it down: this runs twice around every capture pass, on
+    /// the main actor, and the on-screen list can run to hundreds of entries. Off-screen
+    /// windows are still dropped, so a window that minimised or closed mid-pass reports no
+    /// frame exactly as before — which is what the capture code reads as "it moved, discard".
     static func frames(for ids: Set<CGWindowID>) -> [CGWindowID: CGRect] {
+        guard !ids.isEmpty else { return [:] }
+        // `CGWindowListCreateDescriptionFromArray` takes a CFArray whose elements are the
+        // window IDs themselves encoded as pointer values — not CFNumbers — backed by a
+        // null-callback array so it never tries to retain them as objects.
+        let idArray = Array(ids)
+        let pointers = UnsafeMutablePointer<UnsafeRawPointer?>.allocate(capacity: idArray.count)
+        defer { pointers.deallocate() }
+        for (index, id) in idArray.enumerated() {
+            pointers[index] = UnsafeRawPointer(bitPattern: UInt(id))
+        }
+        guard let cfArray = CFArrayCreate(kCFAllocatorDefault, pointers, idArray.count, nil),
+              let raw = CGWindowListCreateDescriptionFromArray(cfArray) as? [[String: Any]]
+        else { return [:] }
+
         var frames: [CGWindowID: CGRect] = [:]
-        for entry in entries(options: [.optionOnScreenOnly, .excludeDesktopElements]) {
-            guard let id = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
-                  ids.contains(id),
-                  let bounds = entry[kCGWindowBounds as String] as? [String: CGFloat],
-                  let x = bounds["X"], let y = bounds["Y"],
-                  let width = bounds["Width"], let height = bounds["Height"]
+        for entry in raw {
+            // `CGWindowListCreateDescriptionFromArray` ignores the on-screen filter, so it
+            // has to be applied by hand to match the old `.optionOnScreenOnly` behaviour.
+            guard (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true,
+                  let id = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  let boundsDict = entry[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
             else { continue }
-            frames[id] = CGRect(x: x, y: y, width: width, height: height)
+            frames[id] = frame
         }
         return frames
     }
