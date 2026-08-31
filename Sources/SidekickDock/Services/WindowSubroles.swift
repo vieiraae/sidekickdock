@@ -34,6 +34,30 @@ enum WindowSubroles {
     private static let lock = NSLock()
     /// Verdict per window, kept only for windows still on screen.
     private nonisolated(unsafe) static var verdicts: [CGWindowID: Bool] = [:]
+    /// When each window was last asked about. Not every question gets an answer — an app can
+    /// list a window in CoreGraphics that never appears in its own Accessibility list — and
+    /// without this such a window asked again on every single tick, which meant an
+    /// Accessibility sweep of its app every tick for as long as it existed. Measured: 243
+    /// consecutive sweeps over three minutes for one Chromium surface.
+    private nonisolated(unsafe) static var askedAt: [CGWindowID: Date] = [:]
+    /// How long an unanswered window waits before it is asked about again. Short enough that
+    /// an app which was simply slow to publish a window is judged within a few seconds, long
+    /// enough that one that never will costs a sweep every few seconds instead of every tick.
+    static let retryAfter: TimeInterval = 5
+
+    /// The windows worth asking about: those with no verdict that have either never been
+    /// asked or were last asked long enough ago to be worth a second try.
+    static func needsProbing(
+        unjudged: [CGWindowID],
+        askedAt: [CGWindowID: Date],
+        now: Date = Date(),
+        retryAfter: TimeInterval = retryAfter
+    ) -> Set<CGWindowID> {
+        Set(unjudged.filter { id in
+            guard let asked = askedAt[id] else { return true }
+            return now.timeIntervalSince(asked) >= retryAfter
+        })
+    }
 
     /// Drops the windows Accessibility says are not real windows.
     ///
@@ -45,20 +69,25 @@ enum WindowSubroles {
 
         lock.lock()
         var known = verdicts
+        var asked = askedAt
         lock.unlock()
 
+        let now = Date()
         let unjudged = windows.filter { known[$0.id] == nil }
-        for pid in Set(unjudged.map(\.pid)) {
+        let wanted = needsProbing(unjudged: unjudged.map(\.id), askedAt: asked, now: now)
+        for pid in Set(unjudged.filter { wanted.contains($0.id) }.map(\.pid)) {
             for (id, isReal) in probe(pid: pid) where known[id] == nil {
                 known[id] = isReal
             }
         }
+        for id in wanted { asked[id] = now }
 
         // Only windows that are still around are worth remembering: window IDs are never
         // reused, so an unpruned cache would grow for as long as the app runs.
         let present = Set(windows.map(\.id))
         lock.lock()
         verdicts = known.filter { present.contains($0.key) }
+        askedAt = asked.filter { present.contains($0.key) }
         lock.unlock()
 
         return windows.filter { known[$0.id] ?? true }
