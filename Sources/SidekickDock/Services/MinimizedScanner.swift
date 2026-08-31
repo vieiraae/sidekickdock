@@ -30,6 +30,10 @@ enum MinimizedScanner {
     /// scan is a synchronous Accessibility round trip per app plus two per window, which is
     /// the most expensive thing the refresh loop does.
     private static let ttl: TimeInterval = 2.0
+    /// Held for the length of a sweep so that two callers arriving at once do the work once
+    /// rather than twice. Deliberately not `lock`: `invalidate()` runs on the main thread and
+    /// must never wait behind a sweep, which is seconds long when an app is unresponsive.
+    private static let sweepGate = NSLock()
 
     static func minimizedWindowIDs() -> Set<CGWindowID> { scan().minimized }
 
@@ -42,6 +46,17 @@ enum MinimizedScanner {
         lock.unlock()
 
         guard AXIsProcessTrusted(), AXWindowID.isAvailable else { return Scan() }
+
+        sweepGate.lock()
+        defer { sweepGate.unlock() }
+        // Another caller may have swept while this one waited for the gate, in which case
+        // its answer is new enough to use.
+        lock.lock()
+        if Date().timeIntervalSince(cachedAt) < maxAge {
+            defer { lock.unlock() }
+            return cached
+        }
+        lock.unlock()
 
         var result = Scan()
         let selfPID = ProcessInfo.processInfo.processIdentifier

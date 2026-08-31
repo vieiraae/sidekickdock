@@ -8,10 +8,15 @@ final class DockManager {
 
     private var controllers: [CGDirectDisplayID: DockController] = [:]
     private var monitors: [Any] = []
+    private var observers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var pointerPoll: Timer?
     private var revealWorkItem: DispatchWorkItem?
     private var hideWorkItem: DispatchWorkItem?
     private var revealedDisplay: CGDirectDisplayID?
+    /// Why the last edge trigger did nothing, so the log records the answer once instead of
+    /// once per poll.
+    private var lastRefusal: String?
     private var cancellables = Set<AnyCancellable>()
     private var isRunning = false
 
@@ -26,15 +31,15 @@ final class DockManager {
         rebuildPanels()
         installPointerMonitors()
 
-        NotificationCenter.default.addObserver(
+        observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { _ in
             Task { @MainActor in self.rebuildPanels() }
-        }
+        })
 
-        NSWorkspace.shared.notificationCenter.addObserver(
+        workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
             queue: .main
@@ -43,7 +48,7 @@ final class DockManager {
                 self.hideAll()
                 WindowStore.shared.refreshNow()
             }
-        }
+        })
 
         Preferences.shared.$edge
             .dropFirst()
@@ -64,8 +69,27 @@ final class DockManager {
             .sink { [weak self] _ in Task { @MainActor in self?.syncPanelVisibility() } }
             .store(in: &cancellables)
 
+        WindowStore.shared.refreshed
+            .sink { [weak self] _ in Task { @MainActor in self?.syncPanelVisibility() } }
+            .store(in: &cancellables)
+
         WindowStore.shared.start()
-        SwitcherHotKey.start()
+
+        // The tap sees every keystroke on the machine, so it exists only while the feature
+        // that needs it does. `@Published` delivers the current value on subscribe, which is
+        // what installs it at launch.
+        Preferences.shared.$replaceCommandTab
+            .removeDuplicates()
+            .sink { enabled in
+                Task { @MainActor in
+                    if enabled {
+                        SwitcherHotKey.start()
+                    } else {
+                        SwitcherHotKey.stop()
+                    }
+                }
+            }
+            .store(in: &cancellables)
     }
 
     func stop() {
@@ -74,6 +98,13 @@ final class DockManager {
         pointerPoll = nil
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
+        // Left registered, these would fire a second time for every screen or Space change
+        // after a restart, and go on rebuilding panels for a dock that has stopped.
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
+        cancellables.removeAll()
         SwitcherHotKey.stop()
         controllers.values.forEach { $0.tearDown() }
         controllers.removeAll()
@@ -163,6 +194,16 @@ final class DockManager {
             controller.updateClickThrough(pointer: point)
         }
 
+        // The pointer sitting inside the revealed strip is what keeps it open, so a stale
+        // note of which display is revealed would swallow every reveal from then on: the
+        // pointer would look like it was already inside a strip that is not on screen. The
+        // controller is the authority on whether it is open, so disagreement is corrected
+        // here rather than waited out.
+        if let revealedDisplay, controllers[revealedDisplay]?.isRevealed != true {
+            self.revealedDisplay = nil
+            cancelHide()
+        }
+
         if let revealedDisplay, let controller = controllers[revealedDisplay] {
             if controller.hoverFrame.contains(point) {
                 cancelHide()
@@ -177,9 +218,32 @@ final class DockManager {
         guard let controller = controllers[id] else { return }
 
         if controller.triggerZone(for: screen).contains(point) {
-            guard revealedDisplay != id, !controller.isSuppressed else { return }
+            // The edge is the one gesture the whole dock hangs off, so when it does nothing
+            // the reason is worth having. Logged only when the answer changes, so holding the
+            // pointer against the edge costs one line rather than one per poll.
+            if revealedDisplay == id || controller.isSuppressed {
+                let reason = revealedDisplay == id ? "already revealed" : "strip is empty"
+                if lastRefusal != reason {
+                    lastRefusal = reason
+                    DebugLog.log("edge trigger on display \(id) refused: \(reason)")
+                }
+                return
+            }
+            lastRefusal = nil
             scheduleReveal(for: id)
         } else if revealedDisplay == nil {
+            // The pointer pressed against the very edge of the screen and still missing the
+            // trigger says the zone is not where the user is aiming — the visible frame can
+            // be inset by the system Dock, for one — which is worth recording, because the
+            // symptom is the same "nothing happens" as a refused reveal.
+            if DebugLog.isEnabled, point.x <= screen.frame.minX + 1 || point.x >= screen.frame.maxX - 1 {
+                let reason = "pointer at screen edge \(Int(point.x)) misses trigger "
+                    + "\(controller.triggerZone(for: screen).integral)"
+                if lastRefusal != reason {
+                    lastRefusal = reason
+                    DebugLog.log("edge trigger on display \(id) refused: \(reason)")
+                }
+            }
             cancelReveal()
         }
     }

@@ -165,6 +165,9 @@ final class DockController {
     /// True only when the dock cannot be revealed at all.
     var isSuppressed: Bool { isEmpty }
 
+    /// Whether the strip is open, as the panel itself sees it.
+    var isRevealed: Bool { model.isRevealed }
+
     private var shouldBeOnScreen: Bool {
         !isEmpty && (model.isRevealed || !hidesPeek)
     }
@@ -191,13 +194,13 @@ final class DockController {
             syncVisibility()
             if !isBoosting {
                 isBoosting = true
-                WindowStore.shared.beginBoost()
+                WindowStore.shared.beginBoost(display: displayID)
             }
         } else {
             model.isRevealed = false
             if isBoosting {
                 isBoosting = false
-                WindowStore.shared.endBoost()
+                WindowStore.shared.endBoost(display: displayID)
             }
             // Stay wide, and on screen, until the cards have finished sliding back behind
             // the edge — otherwise a suppressed dock would blink out mid-animation.
@@ -219,7 +222,7 @@ final class DockController {
         shrinkWorkItem = nil
         if isBoosting {
             isBoosting = false
-            WindowStore.shared.endBoost()
+            WindowStore.shared.endBoost(display: displayID)
         }
         panel.orderOut(nil)
         panel.contentView = nil

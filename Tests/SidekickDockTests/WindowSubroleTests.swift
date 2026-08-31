@@ -24,3 +24,28 @@ final class WindowSubroleTests: XCTestCase {
         XCTAssertTrue(WindowSubroles.isReal(subrole: nil))
     }
 }
+
+/// How often an app is asked about a window it never describes. Asking costs an Accessibility
+/// sweep of the whole app, and one such window used to force one on every tick.
+final class SubroleProbeScheduleTests: XCTestCase {
+
+    func testAWindowNeverAskedAboutIsAskedAboutNow() {
+        let wanted = WindowSubroles.needsProbing(unjudged: [1, 2], askedAt: [:], now: Date())
+        XCTAssertEqual(wanted, [1, 2])
+    }
+
+    func testAnUnansweredWindowIsNotAskedAboutAgainImmediately() {
+        let now = Date()
+        let wanted = WindowSubroles.needsProbing(
+            unjudged: [1], askedAt: [1: now.addingTimeInterval(-0.5)], now: now)
+        XCTAssertTrue(wanted.isEmpty)
+    }
+
+    func testAnUnansweredWindowIsGivenAnotherChanceLater() {
+        // An app can simply have been slow to publish a window it will describe eventually.
+        let now = Date()
+        let wanted = WindowSubroles.needsProbing(
+            unjudged: [1], askedAt: [1: now.addingTimeInterval(-6)], now: now)
+        XCTAssertEqual(wanted, [1])
+    }
+}

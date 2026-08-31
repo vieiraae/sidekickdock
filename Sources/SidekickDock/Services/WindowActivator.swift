@@ -43,40 +43,95 @@ enum WindowActivator {
         let frame = window.frame
 
         queue.async {
-            guard let element = axWindow(pid: pid, windowID: id, title: title, frame: frame) else {
-                // Without a resolved element nothing can be raised, and activating the app
-                // would just surface whichever window it considers frontmost.
-                DebugLog.log("activate: skipped, window \(id) unresolved")
-                // The window is gone even though a card still shows it. Say so, rather than
-                // leaving a card that silently swallows every click.
+            if let element = axWindow(pid: pid, windowID: id, title: title, frame: frame) {
+                finishActivation(element, pid: pid, windowID: id, generation: generation,
+                                 onUnresolved: onUnresolved)
+                return
+            }
+
+            // An app whose Space is hidden reports no windows at all, so a card for one can
+            // never resolve an element — and nothing else can raise it either: focusing
+            // through the window server changes nothing the user can see, and activating the
+            // app leaves the Space where it was. Bringing the Space forward is what the click
+            // meant. Accessibility comes back about 100ms later, measured, so the ordinary
+            // path can then run and put this particular window on top rather than whichever
+            // one its app would have chosen.
+            guard SpaceInspector.reveal(windowID: id) else {
+                finishActivation(nil, pid: pid, windowID: id, generation: generation,
+                                 onUnresolved: onUnresolved)
+                return
+            }
+
+            DebugLog.log("activate: #\(id) is on another Space, revealing it")
+            // Polled rather than slept through: this queue is serial, and half a second of
+            // `Thread.sleep` in it is half a second in which a second click does nothing.
+            awaitWindow(pid: pid, windowID: id, title: title, frame: frame,
+                        deadline: Date().addingTimeInterval(0.5)) { element in
+                finishActivation(element, pid: pid, windowID: id, generation: generation,
+                                 onUnresolved: onUnresolved)
+            }
+        }
+    }
+
+    /// Everything that happens once the window has an Accessibility element — or has proved it
+    /// cannot get one. Runs on `queue`.
+    private static func finishActivation(
+        _ resolved: AXUIElement?,
+        pid: pid_t,
+        windowID id: CGWindowID,
+        generation: Int,
+        onUnresolved: (@Sendable () -> Void)?
+    ) {
+        guard let element = resolved else {
+            // Failing to resolve an element means the *question* failed, which is not the
+            // same as the window being gone: Accessibility can be revoked, time out, or
+            // have the app answer late. Treating those as "gone" deleted the card the
+            // user had just clicked, so the window server is asked before anything is
+            // removed — it is the only authority on whether a window still exists.
+            if WindowEnumerator.frames(for: [id]).isEmpty,
+               !SpaceInspector.spaces().contains(where: { $0.windows.contains(id) }) {
+                DebugLog.log("activate: window \(id) is gone, dropping its card")
                 onUnresolved?()
                 return
             }
 
-            // Read before anything moves: naming the window losing focus is what lets the
-            // window server handle a switch between two windows of the same app itself.
-            let previouslyFocused = AXWindowID.focusedWindow(pid: pid)
-
-            setBool(element, kAXMinimizedAttribute, false)
-
-            // Deliberately no kAXMain / kAXFocused writes: measured, they make an app more
-            // likely to raise a sibling window on another display, not less.
-
-            // Deliberately no AXRaise. Focusing the window through the window server already
-            // brings it to the front of its own display, whereas AXRaise asks the *app* to
-            // raise it — and apps run their own window ordering in response, which is how a
-            // click on one display ends up raising a sibling window on another.
-            if SkyLight.focusWithoutRaising(pid: pid, windowID: id, replacing: previouslyFocused) {
-                confirmRaise(of: element, pid: pid, windowID: id, generation: generation)
-                return
+            // The window still exists and only the Accessibility handle is missing.
+            // Focusing through the window server needs no handle at all, so the click
+            // still does what the user asked. `replacing:` is left nil deliberately: it
+            // only refines the same-app case, and reading it needs the Accessibility that
+            // just failed.
+            DebugLog.log("activate: #\(id) unresolved but still exists, using window server")
+            if !SkyLight.focusWithoutRaising(pid: pid, windowID: id, replacing: nil) {
+                DispatchQueue.main.async {
+                    NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+                }
             }
+            return
+        }
 
-            // Without the window server, raising and activating is all that is left.
-            DebugLog.log("activate: SkyLight unavailable, falling back to app activation")
-            AXUIElementPerformAction(element, kAXRaiseAction as CFString)
-            DispatchQueue.main.async {
-                NSRunningApplication(processIdentifier: pid)?.activate(options: [])
-            }
+        // Read before anything moves: naming the window losing focus is what lets the
+        // window server handle a switch between two windows of the same app itself.
+        let previouslyFocused = AXWindowID.focusedWindow(pid: pid)
+
+        setBool(element, kAXMinimizedAttribute, false)
+
+        // Deliberately no kAXMain / kAXFocused writes: measured, they make an app more
+        // likely to raise a sibling window on another display, not less.
+
+        // Deliberately no AXRaise. Focusing the window through the window server already
+        // brings it to the front of its own display, whereas AXRaise asks the *app* to
+        // raise it — and apps run their own window ordering in response, which is how a
+        // click on one display ends up raising a sibling window on another.
+        if SkyLight.focusWithoutRaising(pid: pid, windowID: id, replacing: previouslyFocused) {
+            confirmRaise(of: element, pid: pid, windowID: id, generation: generation)
+            return
+        }
+
+        // Without the window server, raising and activating is all that is left.
+        DebugLog.log("activate: SkyLight unavailable, falling back to app activation")
+        AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        DispatchQueue.main.async {
+            NSRunningApplication(processIdentifier: pid)?.activate(options: [])
         }
     }
 
@@ -238,6 +293,35 @@ enum WindowActivator {
     }
 
     // MARK: - Lookup
+
+    /// Waits for an app to be able to describe a window again, after its Space was brought
+    /// forward, and hands the result to `body` on `queue`.
+    ///
+    /// The switch is not instantaneous and Accessibility reports nothing at all until it
+    /// lands — measured at about 100ms — so this retries rather than blocking, and gives up
+    /// well short of anything a user would notice as a delay before the raise. Blocking here
+    /// would hold the serial queue every other action shares.
+    private static func awaitWindow(
+        pid: pid_t,
+        windowID: CGWindowID,
+        title: String,
+        frame: CGRect,
+        deadline: Date,
+        then body: @escaping (AXUIElement?) -> Void
+    ) {
+        if let element = axWindow(pid: pid, windowID: windowID, title: title, frame: frame) {
+            body(element)
+            return
+        }
+        guard Date() < deadline else {
+            body(nil)
+            return
+        }
+        queue.asyncAfter(deadline: .now() + 0.025) {
+            awaitWindow(pid: pid, windowID: windowID, title: title, frame: frame,
+                        deadline: deadline, then: body)
+        }
+    }
 
     /// Finds the AXUIElement for a window. The window ID is the only exact match; title and
     /// frame are fallbacks for apps whose elements do not expose an ID. Returns nil rather

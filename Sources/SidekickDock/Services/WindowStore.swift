@@ -11,6 +11,13 @@ final class WindowStore: ObservableObject {
     /// Displays whose active window fills the screen, where the dock must stay out of the
     /// way entirely.
     @Published private(set) var fullScreenDisplays: Set<CGDirectDisplayID> = []
+    /// Fires at the end of every refresh, whether or not anything changed.
+    ///
+    /// `windows` publishes only when the list itself differs, but what the dock shows on a
+    /// given display also depends on which display each window is assigned to — and that can
+    /// change on its own. Anything reading the strip per display has to be told about those
+    /// passes too, or it latches onto an answer that was true once and never hears otherwise.
+    let refreshed = PassthroughSubject<Void, Never>()
 
     /// Stable slot per window, assigned once when the window is first seen and never
     /// revised afterwards. Activating a card must not shuffle the strip, so newly
@@ -61,12 +68,22 @@ final class WindowStore: ObservableObject {
     private var tickInFlight = false
     private var tickAgain = false
     private var boostCount = 0
+    /// The tab of each tabbed window that was last actually on screen — the one the user was
+    /// working in. Kept beyond the life of its card: an inactive tab vanishes from its app's
+    /// Accessibility list, which drops the card, and without a memory of which tab mattered
+    /// the window came back under whichever tab the window server happened to list first.
+    /// Restoring that one made the app bring the wrong tab to the front.
+    private var tabAnchors: [WindowEnumerator.TabGroup: CGWindowID] = [:]
+    /// Displays whose strip is open, and how many controllers say so.
+    private var boostedDisplays: [CGDirectDisplayID: Int] = [:]
 
     private var idleInterval: TimeInterval { 1.4 }
-    /// Ticks between preview refreshes while nothing is revealed: previews then age by at
-    /// most ~5.6s, which is invisible at peek size and four times cheaper.
-    private let idleCaptureEvery = 4
-    private var idleCaptureTick = 0
+    private var throttle = CaptureThrottle()
+    /// Windows a capture has already been asked for. Distinguishes "no preview yet" from
+    /// "no preview possible", so only the former is worth breaking the idle throttle for.
+    private var previewAttempted: Set<CGWindowID> = []
+    /// Logged only when it changes: this is recomputed on every tick.
+    private var lastFullScreenSpaces: Set<CGDirectDisplayID> = []
     private var activeInterval: TimeInterval { 0.5 }
 
     private init() {}
@@ -91,23 +108,16 @@ final class WindowStore: ObservableObject {
     }
 
     /// Whether this tick should refresh previews while nothing is revealed.
-    ///
-    /// The strip peeks at the screen edge rather than hiding, so it stays on screen and every
-    /// new thumbnail costs a ScreenCaptureKit capture per window *and* a CoreAnimation commit
-    /// to redraw it. Sampling showed that redraw to be the largest single cost at rest, all of
-    /// it spent animating previews a few pixels wide that nobody is looking at. Revealing the
-    /// dock boosts the rate and forces an immediate capture, so what the user actually sees is
-    /// unaffected.
-    private func shouldCaptureWhileIdle() -> Bool {
-        guard boostCount == 0 else { return true }
-        idleCaptureTick += 1
-        guard idleCaptureTick >= idleCaptureEvery else { return false }
-        idleCaptureTick = 0
-        return true
+    private func shouldCaptureWhileIdle(for current: [ManagedWindow]) -> Bool {
+        let unattempted = current.contains {
+            !$0.isMinimized && !previewAttempted.contains($0.id)
+        }
+        return throttle.shouldCapture(boosted: boostCount > 0, hasUnattempted: unattempted)
     }
 
     /// Called while a dock panel is revealed, to raise the preview refresh rate.
-    func beginBoost() {
+    func beginBoost(display: CGDirectDisplayID) {
+        boostedDisplays[display, default: 0] += 1
         boostCount += 1
         // The strip is about to be looked at, so the relaxed idle scan age must not carry
         // over into it.
@@ -115,8 +125,37 @@ final class WindowStore: ObservableObject {
         Task { await tick(force: true) }
     }
 
-    func endBoost() {
+    func endBoost(display: CGDirectDisplayID) {
+        if let count = boostedDisplays[display] {
+            if count <= 1 { boostedDisplays[display] = nil } else { boostedDisplays[display] = count - 1 }
+        }
         boostCount = max(0, boostCount - 1)
+    }
+
+    /// The windows a capture pass should photograph.
+    ///
+    /// A pass is not cheap — measured at 901ms for 18 windows, a median of 49ms each, and
+    /// parallelising it buys under a third because the window server serialises the work
+    /// anyway. While a strip is open that pass runs every tick, so photographing displays
+    /// nobody is looking at is the difference between a burst of work and continuous work.
+    ///
+    /// While a strip is open, then, only its own display is refreshed. A window that has
+    /// never been photographed is always included, wherever it is, so a card is never left
+    /// showing its app icon just because the other display happens to be the open one. With
+    /// nothing open the throttled pass still refreshes everything, which is what keeps the
+    /// peek and the ⌘Tab switcher current.
+    nonisolated static func captureTargets(
+        windows: [ManagedWindow],
+        displays: [CGWindowID: CGDirectDisplayID],
+        revealed: Set<CGDirectDisplayID>,
+        attempted: Set<CGWindowID>
+    ) -> [ManagedWindow] {
+        guard !revealed.isEmpty else { return windows }
+        return windows.filter { window in
+            guard attempted.contains(window.id) else { return true }
+            guard let display = displays[window.id] else { return true }
+            return revealed.contains(display)
+        }
     }
 
     // MARK: - Queries
@@ -220,6 +259,9 @@ final class WindowStore: ObservableObject {
 
         let includeMinimized = Preferences.shared.includeMinimized
         let previousOnScreen = lastOnScreenIDs
+        // Which windows already have a card, so a tabbed window that is collapsing into one
+        // card keeps the identity the strip is already showing.
+        let carded = Set(windows.map(\.id))
         // Nothing revealed: let the Accessibility scan go stale for longer. Anything that
         // takes a window off screen — minimising, closing, a Space change — invalidates the
         // cache on its own, so the periodic scan only exists to catch changes that produced
@@ -242,6 +284,16 @@ final class WindowStore: ObservableObject {
         let now = Date()
         var carried = carryRestoringWindows(into: fresh, snapshot: snapshot, now: now)
         carried = carryVanishingWindows(into: carried, snapshot: snapshot, now: now)
+        // After the graces, not before: a card held through a minimise is exactly the kind of
+        // duplicate a tabbed window produces, and collapsing earlier left it behind.
+        for window in carried where lastOnScreenIDs.contains(window.id) {
+            tabAnchors[WindowEnumerator.TabGroup(window)] = window.id
+        }
+        carried = WindowEnumerator.collapsingTabs(
+            carried,
+            onScreen: lastOnScreenIDs,
+            preferring: carded.union(previousOnScreen).union(tabAnchors.values)
+        )
 
         var resolved: [ManagedWindow] = []
         var unsettled: Set<CGWindowID> = []
@@ -286,6 +338,8 @@ final class WindowStore: ObservableObject {
         lastFrames = lastFrames.filter { remembered.contains($0.key) }
         vanishing = vanishing.filter { remembered.contains($0.key) }
         settledFrames = settledFrames.filter { remembered.contains($0.key) }
+        tabAnchors = tabAnchors.filter { remembered.contains($0.value) }
+        previewAttempted.formIntersection(remembered)
         if thumbnails.keys.contains(where: { !remembered.contains($0) }) {
             thumbnails = thumbnails.filter { remembered.contains($0.key) }
         }
@@ -313,11 +367,23 @@ final class WindowStore: ObservableObject {
             fullScreenDisplays = covered
         }
 
-        guard force || !captureInFlight else { return }
-        guard force || shouldCaptureWhileIdle() else { return }
+        refreshed.send()
+
+        // `force` refreshes the window list, not the previews: a click, a minimise or a
+        // reveal all ask for a tick, and letting each one force a full capture pass meant
+        // every interaction paid for one. Whatever is on show is boosted anyway, so the
+        // throttle already says yes when it matters.
+        guard !captureInFlight else { return }
+        guard shouldCaptureWhileIdle(for: current) else { return }
         // Capturing mid-animation would replace a good preview with a smear of the genie
         // effect, so leave the retained thumbnail in place until the window settles.
-        await captureThumbnails(for: current.filter { !unsettled.contains($0.id) })
+        let settled = current.filter { !unsettled.contains($0.id) }
+        await captureThumbnails(for: Self.captureTargets(
+            windows: settled,
+            displays: displayAssignments,
+            revealed: Set(boostedDisplays.keys),
+            attempted: previewAttempted
+        ))
     }
 
     /// Whether a window has genuinely been closed, as opposed to merely being absent from
@@ -447,12 +513,16 @@ final class WindowStore: ObservableObject {
         let frontmost = frontWindows(in: windows)
 
         var covered: Set<CGDirectDisplayID> = []
-        // A display showing a full-screen Space has nothing worth listing: its window is in a
-        // Space of its own and never appears in the enumeration, so the strip would show only
-        // whatever else that app left behind.
+        // A display showing a full-screen Space is covered by definition, and saying so here
+        // rather than leaving it to the geometry test below keeps the notched-Mac case honest,
+        // where a full-screen window sits under the menu bar and so does not quite fill the
+        // screen. The strip still has plenty to offer on hover — the windows waiting on the
+        // desktop behind it — it simply must not peek over content the user is filling the
+        // display with.
         let fullScreen = SpaceInspector.fullScreenDisplays()
         covered.formUnion(fullScreen)
-        if DebugLog.isEnabled, !fullScreen.isEmpty {
+        if fullScreen != lastFullScreenSpaces {
+            lastFullScreenSpaces = fullScreen
             DebugLog.log("full-screen spaces on displays \(fullScreen.sorted())")
         }
 
@@ -476,6 +546,11 @@ final class WindowStore: ObservableObject {
 
         let ids = windows.filter { !$0.isMinimized }.map(\.id)
         guard !ids.isEmpty else { return }
+        // Recorded before the attempt, not after a success. Some windows can never be
+        // captured — ScreenCaptureKit declines a few — and keying the "no preview yet" bypass
+        // off the image itself would have those windows force a capture on every single tick,
+        // for ever.
+        previewAttempted.formUnion(ids)
 
         let width = Preferences.shared.cardWidth
         // Resolved here rather than inside the engine: NSScreen belongs to the main actor.
@@ -492,7 +567,15 @@ final class WindowStore: ObservableObject {
         // through it, and the image that comes back is a smear of the genie or of a drag.
         let before = WindowEnumerator.frames(for: Set(ids))
 
-        let images = await engine.capture(windowIDs: ids, targetWidth: width, scales: scales)
+        // A window on a hidden Space cannot be photographed at all: ScreenCaptureKit refuses
+        // with -3811, because macOS is not rendering that Space. Asking anyway cost a failed
+        // round trip per window on every pass and, worse, a full all-Spaces content query to
+        // find them. The card keeps the last preview taken while the window was on screen,
+        // which is the truest picture of it that exists.
+        let onScreen = ids.filter { before[$0] != nil }
+        guard !onScreen.isEmpty else { return }
+
+        let images = await engine.capture(windowIDs: onScreen, targetWidth: width, scales: scales)
         guard !images.isEmpty else { return }
 
         // Anything that moved, or left the screen, while the pass was running is discarded:
@@ -622,7 +705,7 @@ final class WindowStore: ObservableObject {
     /// activation cannot resolve it, so a stale card cannot sit there swallowing clicks.
     func forget(_ id: CGWindowID) {
         guard windows.contains(where: { $0.id == id }) else { return }
-        DebugLog.log("forget #\(id) - unresolved on click")
+        DebugLog.log("forget #\(id) - gone on click")
         restoring[id] = nil
         vanishing[id] = nil
         expiredRestores.insert(id)

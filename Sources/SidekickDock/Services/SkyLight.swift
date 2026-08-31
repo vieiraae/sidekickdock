@@ -133,6 +133,19 @@ enum SkyLight {
         _ = postEvent(&psn, activate)
     }
 
+    /// The newest macOS whose synthetic-event layout below was actually verified. Beyond it
+    /// the offsets are a guess that happens to have held: worth a line in the log when a
+    /// keyboard shortcut misbehaves, not worth refusing to run for.
+    private static let verifiedMajorVersion = 26
+    private nonisolated(unsafe) static var warnedAboutVersion = false
+
+    private static func warnIfUnverifiedOS() {
+        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        guard major > verifiedMajorVersion, !warnedAboutVersion else { return }
+        warnedAboutVersion = true
+        DebugLog.log("SkyLight: event layout verified up to macOS \(verifiedMajorVersion), running on \(major)")
+    }
+
     private static func eventRecord(marker: UInt8, windowID: CGWindowID) -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: 0xf8)
         bytes[0x04] = 0xf8
@@ -147,6 +160,7 @@ enum SkyLight {
     /// treats it as key once it receives the pair of window-activation events the window
     /// server would normally send on a click.
     private static func makeKeyWindow(psn: inout ProcessSerialNumber, windowID: CGWindowID) {
+        warnIfUnverifiedOS()
         guard let postEvent else { return }
 
         for marker: UInt8 in [0x01, 0x02] {

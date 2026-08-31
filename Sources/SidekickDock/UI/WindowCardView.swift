@@ -43,7 +43,6 @@ struct WindowCardView: View {
         card
             .scaleEffect(scale, anchor: isLeftEdge ? .leading : .trailing)
             .offset(x: slideIn)
-            .opacity(isDimmed && !isHovered ? 0.72 : 1)
             .zIndex(isHovered ? 1 : 0)
             .animation(Theme.hover, value: isHovered)
             .animation(Theme.hover, value: isDimmed)
@@ -83,7 +82,7 @@ struct WindowCardView: View {
                     Button("Show All Windows") { store.showAllWindows(window) }
                 }
                 Divider()
-                if !window.isMinimized {
+                if window.canMinimize {
                     Button("Minimise Window") { store.minimize(window) }
                 }
                 Button("Close Window") { store.close(window) }
@@ -230,27 +229,34 @@ struct WindowCardView: View {
             }
         }
 
-        var symbol: String {
+        /// The green button is the only one that changes meaning: on a full-screen window it
+        /// leaves full screen, so its arrows point inwards, exactly as the window's own do.
+        func symbol(isFullScreen: Bool) -> String {
             switch self {
             case .close: return "xmark"
             case .minimize: return "minus"
-            case .fullScreen: return "arrow.up.left.and.arrow.down.right"
+            case .fullScreen:
+                return isFullScreen
+                    ? "arrow.down.right.and.arrow.up.left"
+                    : "arrow.up.left.and.arrow.down.right"
             }
         }
 
-        var label: String {
+        func label(isFullScreen: Bool) -> String {
             switch self {
             case .close: return "Close"
             case .minimize: return "Minimise"
-            case .fullScreen: return "Full Screen"
+            case .fullScreen: return isFullScreen ? "Exit Full Screen" : "Full Screen"
             }
         }
     }
 
     private func trafficLight(_ control: WindowControl) -> some View {
-        // A minimised window has nothing to minimise, and macOS dims the control rather than
-        // removing it — removing it here would also shuffle the other two.
-        let disabled = control == .minimize && window.isMinimized
+        // A minimised window has nothing to minimise, and a full-screen one cannot be
+        // minimised at all — its Space would have nothing left in it, which is why macOS dims
+        // that button in full screen too. Dimmed rather than removed, both because it is what
+        // the window itself does and because removing it would shuffle the other two.
+        let disabled = control == .minimize && !window.canMinimize
 
         return Circle()
             .fill(disabled ? Color.white.opacity(0.22) : control.color)
@@ -259,7 +265,7 @@ struct WindowCardView: View {
                 Circle().strokeBorder(Color.black.opacity(0.22), lineWidth: 0.5)
             }
             .overlay {
-                Image(systemName: control.symbol)
+                Image(systemName: control.symbol(isFullScreen: window.isFullScreen))
                     .font(.system(size: 7, weight: .black))
                     .foregroundStyle(Color.black.opacity(disabled ? 0 : 0.62))
             }
@@ -294,8 +300,8 @@ struct WindowCardView: View {
                 }
             }
             .allowsHitTesting(!disabled)
-            .help(control.label)
-            .accessibilityLabel("\(control.label) \(window.appName)")
+            .help(control.label(isFullScreen: window.isFullScreen))
+            .accessibilityLabel("\(control.label(isFullScreen: window.isFullScreen)) \(window.appName)")
     }
 
     // MARK: - Geometry
