@@ -45,7 +45,13 @@ enum DebugLog {
                     at: url.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try? data.write(to: url)
+                // Owner-only: the log names every window the user touches, which is their
+                // documents, their pages and who they are messaging.
+                FileManager.default.createFile(
+                    atPath: url.path,
+                    contents: data,
+                    attributes: [.posixPermissions: 0o600]
+                )
             }
         }
     }

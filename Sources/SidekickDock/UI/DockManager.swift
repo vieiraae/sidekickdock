@@ -8,6 +8,8 @@ final class DockManager {
 
     private var controllers: [CGDirectDisplayID: DockController] = [:]
     private var monitors: [Any] = []
+    private var observers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var pointerPoll: Timer?
     private var revealWorkItem: DispatchWorkItem?
     private var hideWorkItem: DispatchWorkItem?
@@ -29,15 +31,15 @@ final class DockManager {
         rebuildPanels()
         installPointerMonitors()
 
-        NotificationCenter.default.addObserver(
+        observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { _ in
             Task { @MainActor in self.rebuildPanels() }
-        }
+        })
 
-        NSWorkspace.shared.notificationCenter.addObserver(
+        workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
             queue: .main
@@ -46,7 +48,7 @@ final class DockManager {
                 self.hideAll()
                 WindowStore.shared.refreshNow()
             }
-        }
+        })
 
         Preferences.shared.$edge
             .dropFirst()
@@ -72,7 +74,22 @@ final class DockManager {
             .store(in: &cancellables)
 
         WindowStore.shared.start()
-        SwitcherHotKey.start()
+
+        // The tap sees every keystroke on the machine, so it exists only while the feature
+        // that needs it does. `@Published` delivers the current value on subscribe, which is
+        // what installs it at launch.
+        Preferences.shared.$replaceCommandTab
+            .removeDuplicates()
+            .sink { enabled in
+                Task { @MainActor in
+                    if enabled {
+                        SwitcherHotKey.start()
+                    } else {
+                        SwitcherHotKey.stop()
+                    }
+                }
+            }
+            .store(in: &cancellables)
     }
 
     func stop() {
@@ -81,6 +98,13 @@ final class DockManager {
         pointerPoll = nil
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
+        // Left registered, these would fire a second time for every screen or Space change
+        // after a restart, and go on rebuilding panels for a dock that has stopped.
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
+        cancellables.removeAll()
         SwitcherHotKey.stop()
         controllers.values.forEach { $0.tearDown() }
         controllers.removeAll()
