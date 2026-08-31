@@ -230,19 +230,24 @@ struct WindowCardView: View {
             }
         }
 
-        var symbol: String {
+        /// The green button is the only one that changes meaning: on a full-screen window it
+        /// leaves full screen, so its arrows point inwards, exactly as the window's own do.
+        func symbol(isFullScreen: Bool) -> String {
             switch self {
             case .close: return "xmark"
             case .minimize: return "minus"
-            case .fullScreen: return "arrow.up.left.and.arrow.down.right"
+            case .fullScreen:
+                return isFullScreen
+                    ? "arrow.down.right.and.arrow.up.left"
+                    : "arrow.up.left.and.arrow.down.right"
             }
         }
 
-        var label: String {
+        func label(isFullScreen: Bool) -> String {
             switch self {
             case .close: return "Close"
             case .minimize: return "Minimise"
-            case .fullScreen: return "Full Screen"
+            case .fullScreen: return isFullScreen ? "Exit Full Screen" : "Full Screen"
             }
         }
     }
@@ -261,7 +266,7 @@ struct WindowCardView: View {
                 Circle().strokeBorder(Color.black.opacity(0.22), lineWidth: 0.5)
             }
             .overlay {
-                Image(systemName: control.symbol)
+                Image(systemName: control.symbol(isFullScreen: window.isFullScreen))
                     .font(.system(size: 7, weight: .black))
                     .foregroundStyle(Color.black.opacity(disabled ? 0 : 0.62))
             }
@@ -296,8 +301,8 @@ struct WindowCardView: View {
                 }
             }
             .allowsHitTesting(!disabled)
-            .help(control.label)
-            .accessibilityLabel("\(control.label) \(window.appName)")
+            .help(control.label(isFullScreen: window.isFullScreen))
+            .accessibilityLabel("\(control.label(isFullScreen: window.isFullScreen)) \(window.appName)")
     }
 
     // MARK: - Geometry
