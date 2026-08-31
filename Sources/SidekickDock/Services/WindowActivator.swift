@@ -44,6 +44,18 @@ enum WindowActivator {
 
         queue.async {
             guard let element = axWindow(pid: pid, windowID: id, title: title, frame: frame) else {
+                // An app whose full-screen Space is hidden reports no windows at all, so a
+                // card for one can never resolve an element. Switching the display to that
+                // Space is what carries the user across to the window, which is the whole
+                // point of the click; activating the app alone leaves it hidden.
+                if SpaceInspector.reveal(windowID: id) {
+                    DebugLog.log("activate: #\(id) is full screen on another Space, revealing it")
+                    DispatchQueue.main.async {
+                        NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+                    }
+                    return
+                }
+
                 // Failing to resolve an element means the *question* failed, which is not the
                 // same as the window being gone: Accessibility can be revoked, time out, or
                 // have the app answer late. Treating those as "gone" deleted the card the

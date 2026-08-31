@@ -490,7 +490,15 @@ final class WindowStore: ObservableObject {
         // through it, and the image that comes back is a smear of the genie or of a drag.
         let before = WindowEnumerator.frames(for: Set(ids))
 
-        let images = await engine.capture(windowIDs: ids, targetWidth: width, scales: scales)
+        // A window on a hidden Space cannot be photographed at all: ScreenCaptureKit refuses
+        // with -3811, because macOS is not rendering that Space. Asking anyway cost a failed
+        // round trip per window on every pass and, worse, a full all-Spaces content query to
+        // find them. The card keeps the last preview taken while the window was on screen,
+        // which is the truest picture of it that exists.
+        let onScreen = ids.filter { before[$0] != nil }
+        guard !onScreen.isEmpty else { return }
+
+        let images = await engine.capture(windowIDs: onScreen, targetWidth: width, scales: scales)
         guard !images.isEmpty else { return }
 
         // Anything that moved, or left the screen, while the pass was running is discarded:

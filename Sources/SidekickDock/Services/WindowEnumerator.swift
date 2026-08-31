@@ -60,7 +60,23 @@ enum WindowEnumerator {
         var results: [ManagedWindow] = []
         var claimed = Set<CGWindowID>()
 
+        // Every full-screen Space, whether it is the one on screen or not. A Space holds the
+        // window plus the app's own full-screen toolbar, and the window server goes on calling
+        // both "on screen" long after the user has swiped away — so without this the toolbar
+        // arrived here as a second card for the same app, a sliver a fraction of the height of
+        // a real preview.
+        let fullScreenSpaces = includeMinimized ? SpaceInspector.fullScreenSpaces() : []
+        var spaceOfWindow: [CGWindowID: Int] = [:]
+        for (index, space) in fullScreenSpaces.enumerated() {
+            for id in space.windows { spaceOfWindow[id] = index }
+        }
+        var surfacesBySpace: [Int: [[String: Any]]] = [:]
+
         for (index, entry) in entries(options: [.optionOnScreenOnly, .excludeDesktopElements]).enumerated() {
+            if let id = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+               let space = spaceOfWindow[id] {
+                surfacesBySpace[space, default: []].append(entry)
+            }
             guard var window = makeWindow(from: entry, isMinimized: false, apps: &apps) else { continue }
             // The on-screen list arrives front-to-back, which is the only place this
             // ordering is available; it is what tells each display which window is on top.
@@ -82,36 +98,87 @@ enum WindowEnumerator {
         // CoreGraphics is concerned, and would otherwise show up as duplicates of the window
         // they belong to.
         results = WindowSubroles.filtering(results)
+
+        // A full-screen Space contains exactly one window. Anything else the app keeps there
+        // is chrome, so only the winner survives.
+        for (space, surfaces) in surfacesBySpace {
+            let winner = fullScreenWindow(among: surfaces).flatMap {
+                ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value
+            }
+            let others = Set(fullScreenSpaces[space].windows).subtracting(winner.map { [$0] } ?? [])
+            results.removeAll { others.contains($0.id) }
+        }
+
         claimed = Set(results.map(\.id))
 
         guard includeMinimized else { return Snapshot(windows: results) }
+
+        // A full-screen window occupies a Space of its own. Swipe back to the desktop and it
+        // leaves the on-screen list entirely — so without this it had no card, and the one
+        // window the user most needs a way back to was the one the dock could not offer.
+        let hiddenSpaces = fullScreenSpaces.filter(\.isHidden)
+        let offScreenFullScreen = hiddenSpaces.reduce(into: Set<CGWindowID>()) {
+            $0.formUnion($1.windows)
+        }.subtracting(claimed)
 
         // A window that just left the on-screen list is either minimised, closed, or on
         // another Space. The cached Accessibility answer may predate that change, and
         // trusting it would drop the window from the strip for a moment before it came
         // back as minimised. Re-scan now so the handoff is seamless.
-        if !previousOnScreenIDs.subtracting(claimed).isEmpty {
-            DebugLog.log("snapshot: left screen \(previousOnScreenIDs.subtracting(claimed).sorted()) -> re-scanning AX")
+        //
+        // Windows on a hidden full-screen Space are excluded: they are off screen for as long
+        // as the user stays away, and counting them here asked for a fresh Accessibility
+        // sweep — the most expensive thing this loop does — on every single tick.
+        let vanished = previousOnScreenIDs.subtracting(claimed).subtracting(offScreenFullScreen)
+        if !vanished.isEmpty {
+            DebugLog.log("snapshot: left screen \(vanished.sorted()) -> re-scanning AX")
             MinimizedScanner.invalidate()
         }
 
         let scan = MinimizedScanner.scan(maxAge: scanMaxAge)
         let minimizedIDs = scan.minimized
-        guard !minimizedIDs.isEmpty else {
+        guard !minimizedIDs.isEmpty || !offScreenFullScreen.isEmpty else {
             return Snapshot(windows: results, liveWindowIDs: scan.existing, probedPIDs: scan.probedPIDs)
         }
 
+        var candidates: [CGWindowID: [String: Any]] = [:]
         for entry in entries(options: [.optionAll, .excludeDesktopElements]) {
             guard let id = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
-                  minimizedIDs.contains(id),
                   !claimed.contains(id)
             else { continue }
-            guard let window = makeWindow(from: entry, isMinimized: true, apps: &apps) else { continue }
-            claimed.insert(id)
+            if minimizedIDs.contains(id) {
+                guard let window = makeWindow(from: entry, isMinimized: true, apps: &apps) else { continue }
+                claimed.insert(id)
+                results.append(window)
+            } else if offScreenFullScreen.contains(id) {
+                candidates[id] = entry
+            }
+        }
+
+        var fullScreenIDs = Set<CGWindowID>()
+        for space in hiddenSpaces {
+            guard let entry = fullScreenWindow(among: space.windows.compactMap { candidates[$0] }),
+                  let window = makeWindow(from: entry, isMinimized: false, apps: &apps),
+                  !claimed.contains(window.id)
+            else { continue }
+            claimed.insert(window.id)
+            fullScreenIDs.insert(window.id)
             results.append(window)
         }
 
-        return Snapshot(windows: results, liveWindowIDs: scan.existing, probedPIDs: scan.probedPIDs)
+        // An app whose Space is hidden answers the Accessibility sweep with no windows at all,
+        // which the store would otherwise read as "they were all closed" and drop the cards a
+        // beat after adding them. The window server has just said these windows exist, and it
+        // is the authority, so they count as live.
+        //
+        // Only the windows, not every surface that shares their Space: counting the rest kept
+        // the app's full-screen toolbar — a card of its own for as long as its Space was on
+        // screen — alive for ever afterwards, as a sliver that could never be closed.
+        return Snapshot(
+            windows: results,
+            liveWindowIDs: scan.existing.union(fullScreenIDs),
+            probedPIDs: scan.probedPIDs
+        )
     }
 
     // MARK: - Helpers
@@ -157,6 +224,35 @@ enum WindowEnumerator {
 
     private static func entries(options: CGWindowListOption) -> [[String: Any]] {
         CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
+    }
+
+    /// Picks the one real window out of the surfaces that share a full-screen Space.
+    ///
+    /// Measured, a full-screen Space holds the window itself plus the Dock's wallpaper and
+    /// backdrop, the window server's menu bar, and the app's own full-screen toolbar. The
+    /// wallpaper and backdrop are *larger* than the window and carry titles of their own, so
+    /// layer and alpha are tested here rather than left to the caller's list options — the
+    /// rule has to hold on its own or it silently picks the wallpaper and yields no card at
+    /// all. That leaves the toolbar, a layer-0, fully opaque, app-owned surface exactly as the
+    /// window is, which was showing up as a second sliver-shaped card; what separates them is
+    /// that the toolbar has no title and the window does. A Space has exactly one full-screen
+    /// window, so picking a single winner is not a heuristic but the definition.
+    static func fullScreenWindow(among entries: [[String: Any]]) -> [String: Any]? {
+        entries.filter { entry in
+            guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0 else { return false }
+            let alpha = (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+            guard alpha > 0.05 else { return false }
+            return !(((entry[kCGWindowName as String] as? String) ?? "").isEmpty)
+        }.max { first, second in
+            area(of: first) < area(of: second)
+        }
+    }
+
+    static func area(of entry: [String: Any]) -> CGFloat {
+        guard let boundsDict = entry[kCGWindowBounds as String] as? [String: Any],
+              let frame = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
+        else { return 0 }
+        return frame.width * frame.height
     }
 
     private static func makeWindow(

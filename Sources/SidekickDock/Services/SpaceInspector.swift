@@ -15,9 +15,17 @@ enum SpaceInspector {
 
     private typealias MainConnectionIDFn = @convention(c) () -> Int32
     private typealias CopyManagedDisplaySpacesFn = @convention(c) (Int32) -> Unmanaged<CFArray>?
+    private typealias CopyWindowsForSpacesFn = @convention(c) (
+        Int32, UInt32, CFArray, UInt32,
+        UnsafeMutablePointer<UInt64>, UnsafeMutablePointer<UInt64>
+    ) -> Unmanaged<CFArray>?
+    private typealias SetCurrentSpaceFn = @convention(c) (Int32, CFString, UInt64) -> Void
 
     /// Space types as reported by the window server: 0 user, 2 system, 4 full screen.
     private static let fullScreenSpace = 4
+
+    /// Asks for every window in a Space rather than only the ones the caller owns.
+    private static let everyWindowInSpace: UInt32 = 0x2
 
     private static let skyLight: UnsafeMutableRawPointer? = dlopen(
         "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight",
@@ -33,6 +41,79 @@ enum SpaceInspector {
     private static let copyManagedDisplaySpaces = symbol(
         "SLSCopyManagedDisplaySpaces", as: CopyManagedDisplaySpacesFn.self
     )
+    private static let copyWindowsForSpaces = symbol(
+        "SLSCopyWindowsWithOptionsAndTags", as: CopyWindowsForSpacesFn.self
+    )
+    private static let setCurrentSpace = symbol(
+        "SLSManagedDisplaySetCurrentSpace", as: SetCurrentSpaceFn.self
+    )
+
+    /// A full-screen Space, which by definition holds exactly one window.
+    struct FullScreenSpace {
+        let display: String
+        let identifier: UInt64
+        /// Whether the user has swiped away from it.
+        let isHidden: Bool
+        /// Every surface the Space holds — the window itself plus wallpaper, backdrop, menu
+        /// bar and the app's full-screen toolbar. Telling them apart is the caller's job.
+        let windows: [CGWindowID]
+    }
+
+    /// Every full-screen Space, on screen or not.
+    ///
+    /// Accessibility is no help here: an app whose Space is hidden reports no windows at all,
+    /// so the usual sweep cannot see a full-screen window the moment the user swipes away from
+    /// it — which is exactly when they want a card for it. The window server still knows, and
+    /// this is the only way to ask.
+    static func fullScreenSpaces() -> [FullScreenSpace] {
+        guard let mainConnectionID, let copyManagedDisplaySpaces, let copyWindowsForSpaces,
+              let raw = copyManagedDisplaySpaces(mainConnectionID())?.takeRetainedValue(),
+              let entries = raw as? [[String: Any]]
+        else { return [] }
+
+        let connection = mainConnectionID()
+        var result: [FullScreenSpace] = []
+        for entry in entries {
+            guard let display = entry["Display Identifier"] as? String else { continue }
+            let showing = (entry["Current Space"] as? [String: Any])?["id64"] as? Int
+            for space in (entry["Spaces"] as? [[String: Any]]) ?? [] {
+                guard let type = space["type"] as? Int, type == fullScreenSpace,
+                      let identifier = space["id64"] as? Int
+                else { continue }
+
+                var setTags: UInt64 = 0
+                var clearTags: UInt64 = 0
+                guard let windows = copyWindowsForSpaces(
+                    connection, 0, [identifier] as CFArray, everyWindowInSpace, &setTags, &clearTags
+                )?.takeRetainedValue(), let numbers = windows as? [NSNumber] else { continue }
+                result.append(FullScreenSpace(
+                    display: display,
+                    identifier: UInt64(identifier),
+                    isHidden: identifier != showing,
+                    windows: numbers.map { CGWindowID($0.uint32Value) }
+                ))
+            }
+        }
+        return result
+    }
+
+    /// Brings the Space holding `windowID` to the front of its display.
+    ///
+    /// Activating the app does not do this: measured, a full-screen window on a hidden Space
+    /// stays hidden and the click appears to do nothing. Accessibility cannot help either —
+    /// the app reports no windows at all while its Space is away — so the window server is
+    /// asked directly, which is the same call the system uses to swipe between Spaces.
+    @discardableResult
+    static func reveal(windowID: CGWindowID) -> Bool {
+        guard let mainConnectionID, let setCurrentSpace,
+              let space = fullScreenSpaces().first(where: {
+                  $0.isHidden && $0.windows.contains(windowID)
+              })
+        else { return false }
+
+        setCurrentSpace(mainConnectionID(), space.display as CFString, space.identifier)
+        return true
+    }
 
     static func fullScreenDisplays() -> Set<CGDirectDisplayID> {
         guard let mainConnectionID, let copyManagedDisplaySpaces,
