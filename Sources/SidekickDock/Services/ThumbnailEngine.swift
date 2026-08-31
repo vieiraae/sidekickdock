@@ -13,10 +13,12 @@ actor ThumbnailEngine {
         if let cachedContent, Date().timeIntervalSince(cachedContentAt) < contentTTL {
             return cachedContent
         }
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            true,
-            onScreenWindowsOnly: true
-        )
+        let content = try await withDeadline(seconds: 3) {
+            try await SCShareableContent.excludingDesktopWindows(
+                true,
+                onScreenWindowsOnly: true
+            )
+        }
         cachedContent = content
         cachedContentAt = Date()
         return content
@@ -66,10 +68,12 @@ actor ThumbnailEngine {
             configuration.captureResolution = .nominal
 
             let filter = SCContentFilter(desktopIndependentWindow: window)
-            if let image = try? await SCScreenshotManager.captureImage(
-                contentFilter: filter,
-                configuration: configuration
-            ) {
+            if let image = try? await withDeadline(seconds: 2, operation: {
+                try await SCScreenshotManager.captureImage(
+                    contentFilter: filter,
+                    configuration: configuration
+                )
+            }) {
                 output[window.windowID] = image
             }
         }
@@ -77,3 +81,28 @@ actor ThumbnailEngine {
         return output
     }
 }
+
+/// Runs `operation`, giving up once `seconds` have passed.
+///
+/// Every preview capture happens inside the single refresh loop that keeps the dock in step
+/// with the desktop, and ScreenCaptureKit offers no timeout of its own. One call that never
+/// returns — which is what a display change or a wake from sleep can provoke — would stall
+/// that loop for good, leaving a strip full of cards for windows that closed days ago. A
+/// missed preview is a stale thumbnail for one tick; a stalled loop is a dead dock.
+func withDeadline<T: Sendable>(
+    seconds: TimeInterval,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(for: .seconds(seconds))
+            throw DeadlineExceeded()
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else { throw DeadlineExceeded() }
+        return result
+    }
+}
+
+struct DeadlineExceeded: Error {}

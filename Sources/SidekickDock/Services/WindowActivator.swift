@@ -44,12 +44,28 @@ enum WindowActivator {
 
         queue.async {
             guard let element = axWindow(pid: pid, windowID: id, title: title, frame: frame) else {
-                // Without a resolved element nothing can be raised, and activating the app
-                // would just surface whichever window it considers frontmost.
-                DebugLog.log("activate: skipped, window \(id) unresolved")
-                // The window is gone even though a card still shows it. Say so, rather than
-                // leaving a card that silently swallows every click.
-                onUnresolved?()
+                // Failing to resolve an element means the *question* failed, which is not the
+                // same as the window being gone: Accessibility can be revoked, time out, or
+                // have the app answer late. Treating those as "gone" deleted the card the
+                // user had just clicked, so the window server is asked before anything is
+                // removed — it is the only authority on whether a window still exists.
+                if WindowEnumerator.frames(for: [id]).isEmpty {
+                    DebugLog.log("activate: window \(id) is gone, dropping its card")
+                    onUnresolved?()
+                    return
+                }
+
+                // The window is still on screen and only the Accessibility handle is missing.
+                // Focusing through the window server needs no handle at all, so the click
+                // still does what the user asked. `replacing:` is left nil deliberately: it
+                // only refines the same-app case, and reading it needs the Accessibility that
+                // just failed.
+                DebugLog.log("activate: #\(id) unresolved but still on screen, using window server")
+                if !SkyLight.focusWithoutRaising(pid: pid, windowID: id, replacing: nil) {
+                    DispatchQueue.main.async {
+                        NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+                    }
+                }
                 return
             }
 
