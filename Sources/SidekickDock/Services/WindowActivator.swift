@@ -43,36 +43,39 @@ enum WindowActivator {
         let frame = window.frame
 
         queue.async {
-            guard let element = axWindow(pid: pid, windowID: id, title: title, frame: frame) else {
-                // An app whose full-screen Space is hidden reports no windows at all, so a
-                // card for one can never resolve an element. Switching the display to that
-                // Space is what carries the user across to the window, which is the whole
-                // point of the click; activating the app alone leaves it hidden.
-                if SpaceInspector.reveal(windowID: id) {
-                    DebugLog.log("activate: #\(id) is full screen on another Space, revealing it")
-                    DispatchQueue.main.async {
-                        NSRunningApplication(processIdentifier: pid)?.activate(options: [])
-                    }
-                    return
-                }
+            var resolved = axWindow(pid: pid, windowID: id, title: title, frame: frame)
 
+            // An app whose Space is hidden reports no windows at all, so a card for one can
+            // never resolve an element — and nothing else can raise it either: focusing
+            // through the window server changes nothing the user can see, and activating the
+            // app leaves the Space where it was. Bringing the Space forward is what the click
+            // meant. Accessibility comes back about 100ms later, measured, so the ordinary
+            // path can then run and put this particular window on top rather than whichever
+            // one its app would have chosen.
+            if resolved == nil, SpaceInspector.reveal(windowID: id) {
+                DebugLog.log("activate: #\(id) is on another Space, revealing it")
+                resolved = awaitWindow(pid: pid, windowID: id, title: title, frame: frame)
+            }
+
+            guard let element = resolved else {
                 // Failing to resolve an element means the *question* failed, which is not the
                 // same as the window being gone: Accessibility can be revoked, time out, or
                 // have the app answer late. Treating those as "gone" deleted the card the
                 // user had just clicked, so the window server is asked before anything is
                 // removed — it is the only authority on whether a window still exists.
-                if WindowEnumerator.frames(for: [id]).isEmpty {
+                if WindowEnumerator.frames(for: [id]).isEmpty,
+                   !SpaceInspector.spaces().contains(where: { $0.windows.contains(id) }) {
                     DebugLog.log("activate: window \(id) is gone, dropping its card")
                     onUnresolved?()
                     return
                 }
 
-                // The window is still on screen and only the Accessibility handle is missing.
+                // The window still exists and only the Accessibility handle is missing.
                 // Focusing through the window server needs no handle at all, so the click
                 // still does what the user asked. `replacing:` is left nil deliberately: it
                 // only refines the same-app case, and reading it needs the Accessibility that
                 // just failed.
-                DebugLog.log("activate: #\(id) unresolved but still on screen, using window server")
+                DebugLog.log("activate: #\(id) unresolved but still exists, using window server")
                 if !SkyLight.focusWithoutRaising(pid: pid, windowID: id, replacing: nil) {
                     DispatchQueue.main.async {
                         NSRunningApplication(processIdentifier: pid)?.activate(options: [])
@@ -270,6 +273,25 @@ enum WindowActivator {
     /// Finds the AXUIElement for a window. The window ID is the only exact match; title and
     /// frame are fallbacks for apps whose elements do not expose an ID. Returns nil rather
     /// than guessing, because acting on the wrong window is worse than doing nothing.
+    /// Waits for an app to be able to describe a window again, after its Space was brought
+    /// forward.
+    ///
+    /// The switch is not instantaneous and Accessibility reports nothing at all until it
+    /// lands — measured at about 100ms, so the wait is polled rather than slept through, and
+    /// capped well short of anything a user would notice as a delay before the raise.
+    private static func awaitWindow(
+        pid: pid_t, windowID: CGWindowID, title: String, frame: CGRect
+    ) -> AXUIElement? {
+        let deadline = Date().addingTimeInterval(0.5)
+        while Date() < deadline {
+            if let element = axWindow(pid: pid, windowID: windowID, title: title, frame: frame) {
+                return element
+            }
+            Thread.sleep(forTimeInterval: 0.025)
+        }
+        return nil
+    }
+
     private static func axWindow(
         pid: pid_t,
         windowID: CGWindowID,
