@@ -43,7 +43,6 @@ struct WindowCardView: View {
         card
             .scaleEffect(scale, anchor: isLeftEdge ? .leading : .trailing)
             .offset(x: slideIn)
-            .opacity(isDimmed && !isHovered ? 0.72 : 1)
             .zIndex(isHovered ? 1 : 0)
             .animation(Theme.hover, value: isHovered)
             .animation(Theme.hover, value: isDimmed)
