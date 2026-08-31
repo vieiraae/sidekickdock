@@ -63,10 +63,10 @@ final class WindowStore: ObservableObject {
     private var boostCount = 0
 
     private var idleInterval: TimeInterval { 1.4 }
-    /// Ticks between preview refreshes while nothing is revealed: previews then age by at
-    /// most ~5.6s, which is invisible at peek size and four times cheaper.
-    private let idleCaptureEvery = 4
-    private var idleCaptureTick = 0
+    private var throttle = CaptureThrottle()
+    /// Windows a capture has already been asked for. Distinguishes "no preview yet" from
+    /// "no preview possible", so only the former is worth breaking the idle throttle for.
+    private var previewAttempted: Set<CGWindowID> = []
     private var activeInterval: TimeInterval { 0.5 }
 
     private init() {}
@@ -91,19 +91,11 @@ final class WindowStore: ObservableObject {
     }
 
     /// Whether this tick should refresh previews while nothing is revealed.
-    ///
-    /// The strip peeks at the screen edge rather than hiding, so it stays on screen and every
-    /// new thumbnail costs a ScreenCaptureKit capture per window *and* a CoreAnimation commit
-    /// to redraw it. Sampling showed that redraw to be the largest single cost at rest, all of
-    /// it spent animating previews a few pixels wide that nobody is looking at. Revealing the
-    /// dock boosts the rate and forces an immediate capture, so what the user actually sees is
-    /// unaffected.
-    private func shouldCaptureWhileIdle() -> Bool {
-        guard boostCount == 0 else { return true }
-        idleCaptureTick += 1
-        guard idleCaptureTick >= idleCaptureEvery else { return false }
-        idleCaptureTick = 0
-        return true
+    private func shouldCaptureWhileIdle(for current: [ManagedWindow]) -> Bool {
+        let unattempted = current.contains {
+            !$0.isMinimized && !previewAttempted.contains($0.id)
+        }
+        return throttle.shouldCapture(boosted: boostCount > 0, hasUnattempted: unattempted)
     }
 
     /// Called while a dock panel is revealed, to raise the preview refresh rate.
@@ -286,6 +278,7 @@ final class WindowStore: ObservableObject {
         lastFrames = lastFrames.filter { remembered.contains($0.key) }
         vanishing = vanishing.filter { remembered.contains($0.key) }
         settledFrames = settledFrames.filter { remembered.contains($0.key) }
+        previewAttempted.formIntersection(remembered)
         if thumbnails.keys.contains(where: { !remembered.contains($0) }) {
             thumbnails = thumbnails.filter { remembered.contains($0.key) }
         }
@@ -314,7 +307,7 @@ final class WindowStore: ObservableObject {
         }
 
         guard force || !captureInFlight else { return }
-        guard force || shouldCaptureWhileIdle() else { return }
+        guard force || shouldCaptureWhileIdle(for: current) else { return }
         // Capturing mid-animation would replace a good preview with a smear of the genie
         // effect, so leave the retained thumbnail in place until the window settles.
         await captureThumbnails(for: current.filter { !unsettled.contains($0.id) })
@@ -476,6 +469,11 @@ final class WindowStore: ObservableObject {
 
         let ids = windows.filter { !$0.isMinimized }.map(\.id)
         guard !ids.isEmpty else { return }
+        // Recorded before the attempt, not after a success. Some windows can never be
+        // captured — ScreenCaptureKit declines a few — and keying the "no preview yet" bypass
+        // off the image itself would have those windows force a capture on every single tick,
+        // for ever.
+        previewAttempted.formUnion(ids)
 
         let width = Preferences.shared.cardWidth
         // Resolved here rather than inside the engine: NSScreen belongs to the main actor.
@@ -622,7 +620,7 @@ final class WindowStore: ObservableObject {
     /// activation cannot resolve it, so a stale card cannot sit there swallowing clicks.
     func forget(_ id: CGWindowID) {
         guard windows.contains(where: { $0.id == id }) else { return }
-        DebugLog.log("forget #\(id) - unresolved on click")
+        DebugLog.log("forget #\(id) - gone on click")
         restoring[id] = nil
         vanishing[id] = nil
         expiredRestores.insert(id)
