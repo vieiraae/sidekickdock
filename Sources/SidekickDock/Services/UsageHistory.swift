@@ -35,7 +35,9 @@ final class UsageHistory {
     /// Drops windows that no longer exist, so the table cannot grow without bound
     /// across a long session.
     func prune(keeping ids: Set<CGWindowID>) {
-        guard sequence.count > ids.count else { return }
+        // Compared as sets rather than by count: two tables of the same size can still hold
+        // different windows, and a count test would keep the stale ones for ever.
+        guard !sequence.keys.allSatisfy(ids.contains) else { return }
         sequence = sequence.filter { ids.contains($0.key) }
     }
 
