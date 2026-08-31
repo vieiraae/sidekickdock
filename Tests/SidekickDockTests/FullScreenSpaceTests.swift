@@ -78,3 +78,42 @@ final class FullScreenSpaceTests: XCTestCase {
         XCTAssertNil(WindowEnumerator.fullScreenWindow(among: []))
     }
 }
+
+/// What a card is allowed to ask of a full-screen window.
+final class FullScreenWindowControlTests: XCTestCase {
+
+    private func window(isMinimized: Bool = false, isFullScreen: Bool = false) -> ManagedWindow {
+        ManagedWindow(
+            id: 1, pid: 2, bundleIdentifier: "com.example", appName: "Example", title: "Window",
+            frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            isActive: false, isMinimized: isMinimized, zIndex: 0, isFullScreen: isFullScreen
+        )
+    }
+
+    func testAnOrdinaryWindowCanBeMinimised() {
+        XCTAssertTrue(window().canMinimize)
+    }
+
+    func testAFullScreenWindowCannotBeMinimised() {
+        // Its Space would be left with nothing in it, which is why macOS dims the button.
+        XCTAssertFalse(window(isFullScreen: true).canMinimize)
+    }
+
+    func testAnAlreadyMinimisedWindowCannotBeMinimised() {
+        XCTAssertFalse(window(isMinimized: true).canMinimize)
+    }
+
+    func testGoingFullScreenChangesTheCard() {
+        // The flag has to take part in equality, or the strip would go on offering minimise
+        // on a card whose window has since gone full screen.
+        XCTAssertNotEqual(window(), window().markingFullScreen())
+    }
+
+    func testMarkingFullScreenKeepsTheRestOfTheWindow() {
+        let marked = window().markingFullScreen()
+        XCTAssertTrue(marked.isFullScreen)
+        XCTAssertEqual(marked.id, 1)
+        XCTAssertEqual(marked.title, "Window")
+        XCTAssertEqual(marked.zIndex, 0)
+    }
+}

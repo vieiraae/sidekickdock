@@ -15,8 +15,16 @@ struct ManagedWindow: Identifiable, Equatable {
     /// Position in the window server's front-to-back ordering, lowest is frontmost. Windows
     /// that are not on screen have no meaningful position and sort last.
     var zIndex: Int = .max
+    /// Whether the window occupies a Space of its own. Full screen is a different mode, not
+    /// just a large frame: it cannot be minimised, which is why macOS greys that button out.
+    var isFullScreen: Bool = false
 
     var displayTitle: String { title.isEmpty ? appName : title }
+
+    /// Whether minimising is something this window can be asked to do. A minimised window has
+    /// nothing to minimise, and a full-screen one cannot be minimised at all — macOS dims the
+    /// yellow button in both cases, and so does the card.
+    var canMinimize: Bool { !isMinimized && !isFullScreen }
 
     var aspectRatio: CGFloat {
         guard frame.height > 1 else { return 16.0 / 10.0 }
@@ -30,6 +38,7 @@ struct ManagedWindow: Identifiable, Equatable {
             && lhs.title == rhs.title
             && lhs.isActive == rhs.isActive
             && lhs.isMinimized == rhs.isMinimized
+            && lhs.isFullScreen == rhs.isFullScreen
             && lhs.frame == rhs.frame
     }
 
@@ -43,7 +52,8 @@ struct ManagedWindow: Identifiable, Equatable {
             frame: frame,
             isActive: true,
             isMinimized: isMinimized,
-            zIndex: zIndex
+            zIndex: zIndex,
+            isFullScreen: isFullScreen
         )
     }
 
@@ -57,7 +67,8 @@ struct ManagedWindow: Identifiable, Equatable {
             frame: frame,
             isActive: false,
             isMinimized: true,
-            zIndex: zIndex
+            zIndex: zIndex,
+            isFullScreen: isFullScreen
         )
     }
 
@@ -72,8 +83,16 @@ struct ManagedWindow: Identifiable, Equatable {
             frame: replacement,
             isActive: isActive,
             isMinimized: isMinimized,
-            zIndex: zIndex
+            zIndex: zIndex,
+            isFullScreen: isFullScreen
         )
+    }
+
+    /// Marks the window as occupying a Space of its own.
+    func markingFullScreen() -> ManagedWindow {
+        var copy = self
+        copy.isFullScreen = true
+        return copy
     }
 
     func markingRestored() -> ManagedWindow {
@@ -86,7 +105,8 @@ struct ManagedWindow: Identifiable, Equatable {
             frame: frame,
             isActive: isActive,
             isMinimized: false,
-            zIndex: zIndex
+            zIndex: zIndex,
+            isFullScreen: isFullScreen
         )
     }
 }

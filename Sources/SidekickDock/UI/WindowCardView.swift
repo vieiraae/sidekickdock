@@ -83,7 +83,7 @@ struct WindowCardView: View {
                     Button("Show All Windows") { store.showAllWindows(window) }
                 }
                 Divider()
-                if !window.isMinimized {
+                if window.canMinimize {
                     Button("Minimise Window") { store.minimize(window) }
                 }
                 Button("Close Window") { store.close(window) }
@@ -248,9 +248,11 @@ struct WindowCardView: View {
     }
 
     private func trafficLight(_ control: WindowControl) -> some View {
-        // A minimised window has nothing to minimise, and macOS dims the control rather than
-        // removing it — removing it here would also shuffle the other two.
-        let disabled = control == .minimize && window.isMinimized
+        // A minimised window has nothing to minimise, and a full-screen one cannot be
+        // minimised at all — its Space would have nothing left in it, which is why macOS dims
+        // that button in full screen too. Dimmed rather than removed, both because it is what
+        // the window itself does and because removing it would shuffle the other two.
+        let disabled = control == .minimize && !window.canMinimize
 
         return Circle()
             .fill(disabled ? Color.white.opacity(0.22) : control.color)

@@ -102,13 +102,16 @@ enum WindowEnumerator {
 
         // A full-screen Space contains exactly one window. Anything else the app keeps there
         // is chrome, so only the winner survives.
+        var fullScreenIDs = Set<CGWindowID>()
         for (space, surfaces) in surfacesBySpace {
             let winner = fullScreenWindow(among: surfaces).flatMap {
                 ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value
             }
+            if let winner { fullScreenIDs.insert(winner) }
             let others = Set(fullScreenSpaces[space].windows).subtracting(winner.map { [$0] } ?? [])
             results.removeAll { others.contains($0.id) }
         }
+        results = results.map { fullScreenIDs.contains($0.id) ? $0.markingFullScreen() : $0 }
 
         claimed = Set(results.map(\.id))
 
@@ -181,7 +184,7 @@ enum WindowEnumerator {
             else { continue }
             claimed.insert(window.id)
             offScreenIDs.insert(window.id)
-            results.append(window)
+            results.append(window.markingFullScreen())
         }
 
         // A hidden desktop Space needs no such picking: it holds whatever the user left there,
