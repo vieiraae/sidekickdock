@@ -177,7 +177,7 @@ enum WindowEnumerator {
             }
         }
 
-        results.append(contentsOf: collapsingTabs(minimized))
+        results.append(contentsOf: minimized)
 
         var offScreenIDs = Set<CGWindowID>()
         for space in hiddenSpaces {
@@ -204,7 +204,7 @@ enum WindowEnumerator {
             claimed.insert(id)
             hidden.append(window)
         }
-        let hiddenKept = collapsingTabs(hidden)
+        let hiddenKept = hidden
         offScreenIDs.formUnion(hiddenKept.map(\.id))
         results.append(contentsOf: hiddenKept)
 
@@ -299,27 +299,50 @@ enum WindowEnumerator {
 
     /// Collapses the extra windows a tabbed window turns into while it is off screen.
     ///
-    /// Measured: a Terminal window with two tabs is one window in the Accessibility list and
-    /// two in the CoreGraphics one — each tab has its own window ID, and only the active tab
-    /// is on screen. Minimise it and the app suddenly reports *every* tab as a minimised
-    /// window, all at the same frame and title, so the strip grew a card per tab for what the
-    /// user minimised as one window. Restore it and they collapse back into one again.
+    /// Measured on Terminal: each tab is its own CoreGraphics window and only the active one
+    /// is on screen, but minimising makes the app report *every* tab as a minimised window at
+    /// the same frame — so the strip grew a card per tab for what the user minimised as a
+    /// single window. Restoring collapses them back into one.
     ///
-    /// Windows of one app sharing an exact frame while off screen are therefore treated as
-    /// tabs of a single window, and only the frontmost is kept — the one the app brings back.
-    /// On-screen windows are deliberately not collapsed: only the active tab is ever on
-    /// screen, and two ordinary windows can legitimately sit exactly on top of each other.
-    static func collapsingTabs(_ windows: [ManagedWindow]) -> [ManagedWindow] {
+    /// Windows of one app sharing an exact frame are therefore treated as tabs of one window.
+    /// An on-screen window always wins, since that is the tab the user is actually looking at;
+    /// otherwise the window that already has a card does, so the card keeps its identity as
+    /// the window minimises. Both rules exist because identity churn is not merely cosmetic:
+    /// the graces that hold a card steady while a window is between states will hold an
+    /// abandoned ID as a second card — which is how minimising through the preview showed a
+    /// minimised card and an active one for the same window.
+    ///
+    /// Nothing on screen is ever removed: two ordinary windows can legitimately sit exactly on
+    /// top of each other, and only the active tab of a tabbed window is ever on screen.
+    static func collapsingTabs(
+        _ windows: [ManagedWindow],
+        onScreen: Set<CGWindowID> = [],
+        preferring carded: Set<CGWindowID> = []
+    ) -> [ManagedWindow] {
         struct Key: Hashable {
             let pid: pid_t
             let x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat
         }
-        var seen = Set<Key>()
-        return windows.filter { window in
-            let key = Key(pid: window.pid, x: window.frame.origin.x, y: window.frame.origin.y,
-                          width: window.frame.width, height: window.frame.height)
-            return seen.insert(key).inserted
+        func key(_ window: ManagedWindow) -> Key {
+            Key(pid: window.pid, x: window.frame.origin.x, y: window.frame.origin.y,
+                width: window.frame.width, height: window.frame.height)
         }
+
+        var groups: [Key: [ManagedWindow]] = [:]
+        for window in windows { groups[key(window), default: []].append(window) }
+
+        var dropped = Set<CGWindowID>()
+        for (_, group) in groups where group.count > 1 {
+            let visible = group.filter { onScreen.contains($0.id) }
+            if !visible.isEmpty {
+                dropped.formUnion(group.lazy.filter { !onScreen.contains($0.id) }.map(\.id))
+            } else {
+                let keeper = group.first { carded.contains($0.id) } ?? group[0]
+                dropped.formUnion(group.lazy.filter { $0.id != keeper.id }.map(\.id))
+            }
+        }
+        guard !dropped.isEmpty else { return windows }
+        return windows.filter { !dropped.contains($0.id) }
     }
 
     private static func makeWindow(

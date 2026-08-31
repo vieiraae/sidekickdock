@@ -6,18 +6,46 @@ import XCTest
 /// at the same frame — so the strip grew a card per tab for one minimised window.
 final class TabCollapseTests: XCTestCase {
 
-    private func window(_ id: CGWindowID, pid: pid_t = 1, frame: CGRect) -> ManagedWindow {
+    private let frame = CGRect(x: 234, y: 206, width: 877, height: 535)
+
+    private func window(
+        _ id: CGWindowID, pid: pid_t = 1, frame: CGRect, minimized: Bool = true
+    ) -> ManagedWindow {
         ManagedWindow(id: id, pid: pid, bundleIdentifier: nil, appName: "Terminal", title: "zsh",
-                      frame: frame, isActive: false, isMinimized: true)
+                      frame: frame, isActive: false, isMinimized: minimized)
     }
 
     func testTabsOfOneWindowBecomeOneCard() {
-        let frame = CGRect(x: 234, y: 206, width: 877, height: 535)
         let kept = WindowEnumerator.collapsingTabs([
             window(31348, frame: frame), window(28455, frame: frame), window(28039, frame: frame)
         ])
-        // The frontmost is kept: it is the tab the app brings back.
         XCTAssertEqual(kept.map(\.id), [31348])
+    }
+
+    func testTheCardTheUserIsAlreadyLookingAtKeepsItsIdentity() {
+        // Handing the card to a different tab at the moment of minimising is what made the
+        // graces hold the abandoned ID as a second card.
+        let kept = WindowEnumerator.collapsingTabs(
+            [window(31348, frame: frame), window(28455, frame: frame)],
+            preferring: [28455]
+        )
+        XCTAssertEqual(kept.map(\.id), [28455])
+    }
+
+    func testAGraceCardIsDroppedRatherThanShownBesideItsOwnWindow() {
+        // The reported bug: a minimised card and an "active" one for the same window, the
+        // second being a card held through the animation under the abandoned tab's ID.
+        let onScreen = window(28455, frame: frame, minimized: false)
+        let ghost = window(31348, frame: frame, minimized: false)
+        let kept = WindowEnumerator.collapsingTabs([onScreen, ghost], onScreen: [28455])
+        XCTAssertEqual(kept.map(\.id), [28455])
+    }
+
+    func testAnOnScreenWindowIsNeverRemoved() {
+        let a = window(1, frame: frame, minimized: false)
+        let b = window(2, frame: frame, minimized: false)
+        let kept = WindowEnumerator.collapsingTabs([a, b], onScreen: [1, 2])
+        XCTAssertEqual(kept.map(\.id), [1, 2])
     }
 
     func testTwoRealWindowsAreBothKept() {
@@ -29,7 +57,6 @@ final class TabCollapseTests: XCTestCase {
     }
 
     func testWindowsOfDifferentAppsAreNeverCollapsed() {
-        let frame = CGRect(x: 0, y: 0, width: 800, height: 600)
         let kept = WindowEnumerator.collapsingTabs([
             window(1, pid: 1, frame: frame), window(2, pid: 2, frame: frame)
         ])

@@ -253,6 +253,9 @@ final class WindowStore: ObservableObject {
 
         let includeMinimized = Preferences.shared.includeMinimized
         let previousOnScreen = lastOnScreenIDs
+        // Which windows already have a card, so a tabbed window that is collapsing into one
+        // card keeps the identity the strip is already showing.
+        let carded = Set(windows.map(\.id))
         // Nothing revealed: let the Accessibility scan go stale for longer. Anything that
         // takes a window off screen — minimising, closing, a Space change — invalidates the
         // cache on its own, so the periodic scan only exists to catch changes that produced
@@ -275,6 +278,11 @@ final class WindowStore: ObservableObject {
         let now = Date()
         var carried = carryRestoringWindows(into: fresh, snapshot: snapshot, now: now)
         carried = carryVanishingWindows(into: carried, snapshot: snapshot, now: now)
+        // After the graces, not before: a card held through a minimise is exactly the kind of
+        // duplicate a tabbed window produces, and collapsing earlier left it behind.
+        carried = WindowEnumerator.collapsingTabs(
+            carried, onScreen: lastOnScreenIDs, preferring: carded
+        )
 
         var resolved: [ManagedWindow] = []
         var unsettled: Set<CGWindowID> = []
