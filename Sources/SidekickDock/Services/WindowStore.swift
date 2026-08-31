@@ -11,6 +11,13 @@ final class WindowStore: ObservableObject {
     /// Displays whose active window fills the screen, where the dock must stay out of the
     /// way entirely.
     @Published private(set) var fullScreenDisplays: Set<CGDirectDisplayID> = []
+    /// Fires at the end of every refresh, whether or not anything changed.
+    ///
+    /// `windows` publishes only when the list itself differs, but what the dock shows on a
+    /// given display also depends on which display each window is assigned to — and that can
+    /// change on its own. Anything reading the strip per display has to be told about those
+    /// passes too, or it latches onto an answer that was true once and never hears otherwise.
+    let refreshed = PassthroughSubject<Void, Never>()
 
     /// Stable slot per window, assigned once when the window is first seen and never
     /// revised afterwards. Activating a card must not shuffle the strip, so newly
@@ -305,6 +312,8 @@ final class WindowStore: ObservableObject {
             DebugLog.log("displays covered by active window: \(covered.sorted())")
             fullScreenDisplays = covered
         }
+
+        refreshed.send()
 
         guard force || !captureInFlight else { return }
         guard force || shouldCaptureWhileIdle(for: current) else { return }

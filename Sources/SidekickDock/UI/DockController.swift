@@ -165,6 +165,9 @@ final class DockController {
     /// True only when the dock cannot be revealed at all.
     var isSuppressed: Bool { isEmpty }
 
+    /// Whether the strip is open, as the panel itself sees it.
+    var isRevealed: Bool { model.isRevealed }
+
     private var shouldBeOnScreen: Bool {
         !isEmpty && (model.isRevealed || !hidesPeek)
     }
