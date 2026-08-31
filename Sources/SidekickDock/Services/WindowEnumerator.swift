@@ -65,7 +65,8 @@ enum WindowEnumerator {
         // both "on screen" long after the user has swiped away — so without this the toolbar
         // arrived here as a second card for the same app, a sliver a fraction of the height of
         // a real preview.
-        let fullScreenSpaces = includeMinimized ? SpaceInspector.fullScreenSpaces() : []
+        let spaces = includeMinimized ? SpaceInspector.spaces() : []
+        let fullScreenSpaces = spaces.filter(\.isFullScreen)
         var spaceOfWindow: [CGWindowID: Int] = [:]
         for (index, space) in fullScreenSpaces.enumerated() {
             for id in space.windows { spaceOfWindow[id] = index }
@@ -121,6 +122,23 @@ enum WindowEnumerator {
             $0.formUnion($1.windows)
         }.subtracting(claimed)
 
+        // Going full screen takes the whole display, so every other window on it leaves the
+        // on-screen list at once and the strip was left offering the one window the user is
+        // already looking at. The desktop those windows are waiting on is the thing they want
+        // a way back to, so it is enumerated too — but only for a display that is actually
+        // showing a full-screen Space, since on an ordinary desktop the Spaces the user has
+        // swiped away from are meant to stay out of the way.
+        let fullScreenDisplays = Set(
+            spaces.filter { $0.isFullScreen && !$0.isHidden }.map(\.display)
+        )
+        let offScreenDesktop = spaces.filter {
+            $0.isHidden && !$0.isFullScreen && fullScreenDisplays.contains($0.display)
+        }.reduce(into: Set<CGWindowID>()) {
+            $0.formUnion($1.windows)
+        }.subtracting(claimed).subtracting(offScreenFullScreen)
+
+        let offScreen = offScreenFullScreen.union(offScreenDesktop)
+
         // A window that just left the on-screen list is either minimised, closed, or on
         // another Space. The cached Accessibility answer may predate that change, and
         // trusting it would drop the window from the strip for a moment before it came
@@ -129,7 +147,7 @@ enum WindowEnumerator {
         // Windows on a hidden full-screen Space are excluded: they are off screen for as long
         // as the user stays away, and counting them here asked for a fresh Accessibility
         // sweep — the most expensive thing this loop does — on every single tick.
-        let vanished = previousOnScreenIDs.subtracting(claimed).subtracting(offScreenFullScreen)
+        let vanished = previousOnScreenIDs.subtracting(claimed).subtracting(offScreen)
         if !vanished.isEmpty {
             DebugLog.log("snapshot: left screen \(vanished.sorted()) -> re-scanning AX")
             MinimizedScanner.invalidate()
@@ -137,7 +155,7 @@ enum WindowEnumerator {
 
         let scan = MinimizedScanner.scan(maxAge: scanMaxAge)
         let minimizedIDs = scan.minimized
-        guard !minimizedIDs.isEmpty || !offScreenFullScreen.isEmpty else {
+        guard !minimizedIDs.isEmpty || !offScreen.isEmpty else {
             return Snapshot(windows: results, liveWindowIDs: scan.existing, probedPIDs: scan.probedPIDs)
         }
 
@@ -150,19 +168,34 @@ enum WindowEnumerator {
                 guard let window = makeWindow(from: entry, isMinimized: true, apps: &apps) else { continue }
                 claimed.insert(id)
                 results.append(window)
-            } else if offScreenFullScreen.contains(id) {
+            } else if offScreen.contains(id) {
                 candidates[id] = entry
             }
         }
 
-        var fullScreenIDs = Set<CGWindowID>()
+        var offScreenIDs = Set<CGWindowID>()
         for space in hiddenSpaces {
             guard let entry = fullScreenWindow(among: space.windows.compactMap { candidates[$0] }),
                   let window = makeWindow(from: entry, isMinimized: false, apps: &apps),
                   !claimed.contains(window.id)
             else { continue }
             claimed.insert(window.id)
-            fullScreenIDs.insert(window.id)
+            offScreenIDs.insert(window.id)
+            results.append(window)
+        }
+
+        // A hidden desktop Space needs no such picking: it holds whatever the user left there,
+        // and the ordinary rules — layer, opacity, size, an app that appears in the Dock —
+        // already separate the windows from the widgets, menu bar and helper surfaces that
+        // share the Space with them. Subroles are deliberately not consulted: the apps cannot
+        // answer while their Space is away, so asking would cost an Accessibility sweep per
+        // tick and learn nothing.
+        for id in offScreenDesktop.sorted() {
+            guard let entry = candidates[id], !claimed.contains(id),
+                  let window = makeWindow(from: entry, isMinimized: false, apps: &apps)
+            else { continue }
+            claimed.insert(id)
+            offScreenIDs.insert(id)
             results.append(window)
         }
 
@@ -176,7 +209,7 @@ enum WindowEnumerator {
         // screen — alive for ever afterwards, as a sliver that could never be closed.
         return Snapshot(
             windows: results,
-            liveWindowIDs: scan.existing.union(fullScreenIDs),
+            liveWindowIDs: scan.existing.union(offScreenIDs),
             probedPIDs: scan.probedPIDs
         )
     }

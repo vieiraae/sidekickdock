@@ -440,9 +440,12 @@ final class WindowStore: ObservableObject {
         let frontmost = frontWindows(in: windows)
 
         var covered: Set<CGDirectDisplayID> = []
-        // A display showing a full-screen Space has nothing worth listing: its window is in a
-        // Space of its own and never appears in the enumeration, so the strip would show only
-        // whatever else that app left behind.
+        // A display showing a full-screen Space is covered by definition, and saying so here
+        // rather than leaving it to the geometry test below keeps the notched-Mac case honest,
+        // where a full-screen window sits under the menu bar and so does not quite fill the
+        // screen. The strip still has plenty to offer on hover — the windows waiting on the
+        // desktop behind it — it simply must not peek over content the user is filling the
+        // display with.
         let fullScreen = SpaceInspector.fullScreenDisplays()
         covered.formUnion(fullScreen)
         if DebugLog.isEnabled, !fullScreen.isEmpty {
