@@ -162,6 +162,7 @@ enum WindowEnumerator {
             return Snapshot(windows: results, liveWindowIDs: scan.existing, probedPIDs: scan.probedPIDs)
         }
 
+        var minimized: [ManagedWindow] = []
         var candidates: [CGWindowID: [String: Any]] = [:]
         for entry in entries(options: [.optionAll, .excludeDesktopElements]) {
             guard let id = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
@@ -170,11 +171,13 @@ enum WindowEnumerator {
             if minimizedIDs.contains(id) {
                 guard let window = makeWindow(from: entry, isMinimized: true, apps: &apps) else { continue }
                 claimed.insert(id)
-                results.append(window)
+                minimized.append(window)
             } else if offScreen.contains(id) {
                 candidates[id] = entry
             }
         }
+
+        results.append(contentsOf: collapsingTabs(minimized))
 
         var offScreenIDs = Set<CGWindowID>()
         for space in hiddenSpaces {
@@ -193,14 +196,17 @@ enum WindowEnumerator {
         // share the Space with them. Subroles are deliberately not consulted: the apps cannot
         // answer while their Space is away, so asking would cost an Accessibility sweep per
         // tick and learn nothing.
+        var hidden: [ManagedWindow] = []
         for id in offScreenDesktop.sorted() {
             guard let entry = candidates[id], !claimed.contains(id),
                   let window = makeWindow(from: entry, isMinimized: false, apps: &apps)
             else { continue }
             claimed.insert(id)
-            offScreenIDs.insert(id)
-            results.append(window)
+            hidden.append(window)
         }
+        let hiddenKept = collapsingTabs(hidden)
+        offScreenIDs.formUnion(hiddenKept.map(\.id))
+        results.append(contentsOf: hiddenKept)
 
         // An app whose Space is hidden answers the Accessibility sweep with no windows at all,
         // which the store would otherwise read as "they were all closed" and drop the cards a
@@ -289,6 +295,31 @@ enum WindowEnumerator {
               let frame = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
         else { return 0 }
         return frame.width * frame.height
+    }
+
+    /// Collapses the extra windows a tabbed window turns into while it is off screen.
+    ///
+    /// Measured: a Terminal window with two tabs is one window in the Accessibility list and
+    /// two in the CoreGraphics one — each tab has its own window ID, and only the active tab
+    /// is on screen. Minimise it and the app suddenly reports *every* tab as a minimised
+    /// window, all at the same frame and title, so the strip grew a card per tab for what the
+    /// user minimised as one window. Restore it and they collapse back into one again.
+    ///
+    /// Windows of one app sharing an exact frame while off screen are therefore treated as
+    /// tabs of a single window, and only the frontmost is kept — the one the app brings back.
+    /// On-screen windows are deliberately not collapsed: only the active tab is ever on
+    /// screen, and two ordinary windows can legitimately sit exactly on top of each other.
+    static func collapsingTabs(_ windows: [ManagedWindow]) -> [ManagedWindow] {
+        struct Key: Hashable {
+            let pid: pid_t
+            let x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat
+        }
+        var seen = Set<Key>()
+        return windows.filter { window in
+            let key = Key(pid: window.pid, x: window.frame.origin.x, y: window.frame.origin.y,
+                          width: window.frame.width, height: window.frame.height)
+            return seen.insert(key).inserted
+        }
     }
 
     private static func makeWindow(
