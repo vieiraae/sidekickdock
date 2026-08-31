@@ -297,6 +297,21 @@ enum WindowEnumerator {
         return frame.width * frame.height
     }
 
+    /// Identifies the windows an app draws at exactly the same place: the tabs of one tabbed
+    /// window, in every case measured.
+    struct TabGroup: Hashable {
+        let pid: pid_t
+        let x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat
+
+        init(_ window: ManagedWindow) {
+            pid = window.pid
+            x = window.frame.origin.x
+            y = window.frame.origin.y
+            width = window.frame.width
+            height = window.frame.height
+        }
+    }
+
     /// Collapses the extra windows a tabbed window turns into while it is off screen.
     ///
     /// Measured on Terminal: each tab is its own CoreGraphics window and only the active one
@@ -304,32 +319,20 @@ enum WindowEnumerator {
     /// the same frame — so the strip grew a card per tab for what the user minimised as a
     /// single window. Restoring collapses them back into one.
     ///
-    /// Windows of one app sharing an exact frame are therefore treated as tabs of one window.
-    /// An on-screen window always wins, since that is the tab the user is actually looking at;
-    /// otherwise the window that already has a card does, so the card keeps its identity as
-    /// the window minimises. Both rules exist because identity churn is not merely cosmetic:
-    /// the graces that hold a card steady while a window is between states will hold an
-    /// abandoned ID as a second card — which is how minimising through the preview showed a
-    /// minimised card and an active one for the same window.
+    /// Which one is kept is not cosmetic. The card's ID is what a click acts on, and focusing
+    /// a tab's window selects that tab, so keeping the wrong one restored the window with the
+    /// wrong tab in front. `preferred` therefore carries the tab that was last actually on
+    /// screen — the one the user was working in — and it wins over z-order.
     ///
     /// Nothing on screen is ever removed: two ordinary windows can legitimately sit exactly on
     /// top of each other, and only the active tab of a tabbed window is ever on screen.
     static func collapsingTabs(
         _ windows: [ManagedWindow],
         onScreen: Set<CGWindowID> = [],
-        preferring carded: Set<CGWindowID> = []
+        preferring preferred: Set<CGWindowID> = []
     ) -> [ManagedWindow] {
-        struct Key: Hashable {
-            let pid: pid_t
-            let x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat
-        }
-        func key(_ window: ManagedWindow) -> Key {
-            Key(pid: window.pid, x: window.frame.origin.x, y: window.frame.origin.y,
-                width: window.frame.width, height: window.frame.height)
-        }
-
-        var groups: [Key: [ManagedWindow]] = [:]
-        for window in windows { groups[key(window), default: []].append(window) }
+        var groups: [TabGroup: [ManagedWindow]] = [:]
+        for window in windows { groups[TabGroup(window), default: []].append(window) }
 
         var dropped = Set<CGWindowID>()
         for (_, group) in groups where group.count > 1 {
@@ -337,7 +340,7 @@ enum WindowEnumerator {
             if !visible.isEmpty {
                 dropped.formUnion(group.lazy.filter { !onScreen.contains($0.id) }.map(\.id))
             } else {
-                let keeper = group.first { carded.contains($0.id) } ?? group[0]
+                let keeper = group.first { preferred.contains($0.id) } ?? group[0]
                 dropped.formUnion(group.lazy.filter { $0.id != keeper.id }.map(\.id))
             }
         }

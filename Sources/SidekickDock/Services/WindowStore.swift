@@ -68,6 +68,12 @@ final class WindowStore: ObservableObject {
     private var tickInFlight = false
     private var tickAgain = false
     private var boostCount = 0
+    /// The tab of each tabbed window that was last actually on screen — the one the user was
+    /// working in. Kept beyond the life of its card: an inactive tab vanishes from its app's
+    /// Accessibility list, which drops the card, and without a memory of which tab mattered
+    /// the window came back under whichever tab the window server happened to list first.
+    /// Restoring that one made the app bring the wrong tab to the front.
+    private var tabAnchors: [WindowEnumerator.TabGroup: CGWindowID] = [:]
     /// Displays whose strip is open, and how many controllers say so.
     private var boostedDisplays: [CGDirectDisplayID: Int] = [:]
 
@@ -280,8 +286,13 @@ final class WindowStore: ObservableObject {
         carried = carryVanishingWindows(into: carried, snapshot: snapshot, now: now)
         // After the graces, not before: a card held through a minimise is exactly the kind of
         // duplicate a tabbed window produces, and collapsing earlier left it behind.
+        for window in carried where lastOnScreenIDs.contains(window.id) {
+            tabAnchors[WindowEnumerator.TabGroup(window)] = window.id
+        }
         carried = WindowEnumerator.collapsingTabs(
-            carried, onScreen: lastOnScreenIDs, preferring: carded
+            carried,
+            onScreen: lastOnScreenIDs,
+            preferring: carded.union(previousOnScreen).union(tabAnchors.values)
         )
 
         var resolved: [ManagedWindow] = []
@@ -327,6 +338,7 @@ final class WindowStore: ObservableObject {
         lastFrames = lastFrames.filter { remembered.contains($0.key) }
         vanishing = vanishing.filter { remembered.contains($0.key) }
         settledFrames = settledFrames.filter { remembered.contains($0.key) }
+        tabAnchors = tabAnchors.filter { remembered.contains($0.value) }
         previewAttempted.formIntersection(remembered)
         if thumbnails.keys.contains(where: { !remembered.contains($0) }) {
             thumbnails = thumbnails.filter { remembered.contains($0.key) }

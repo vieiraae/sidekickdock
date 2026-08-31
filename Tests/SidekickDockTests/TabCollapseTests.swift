@@ -62,4 +62,25 @@ final class TabCollapseTests: XCTestCase {
         ])
         XCTAssertEqual(kept.map(\.id), [1, 2])
     }
+
+    func testTheTabThatWasOnScreenWinsOverZOrder() {
+        // The tab the user was working in is the one that must be restored: focusing a tab's
+        // window is what selects that tab, so keeping the window server's first listing
+        // brought the window back with the wrong tab in front.
+        let kept = WindowEnumerator.collapsingTabs(
+            [window(28039, frame: frame), window(28029, frame: frame), window(31636, frame: frame)],
+            preferring: [28029]
+        )
+        XCTAssertEqual(kept.map(\.id), [28029])
+    }
+
+    func testAnAnchorForAnotherWindowDoesNotDecideThisOne() {
+        let other = CGRect(x: 10, y: 10, width: 400, height: 300)
+        let kept = WindowEnumerator.collapsingTabs(
+            [window(28039, frame: frame), window(28029, frame: frame),
+             window(7, pid: 2, frame: other)],
+            preferring: [7]
+        )
+        XCTAssertEqual(kept.map(\.id).sorted(), [7, 28039])
+    }
 }
