@@ -184,6 +184,16 @@ final class WindowStore: ObservableObject {
         }
     }
 
+    /// Whether any window is assigned to this display, without the sort `windows(on:)` does.
+    ///
+    /// `DockManager.syncPanelVisibility` asks this for every panel on every refresh tick — and
+    /// the refresh fires up to three times a tick — purely to decide whether a strip has
+    /// anything to show. Ordering the whole list first, a filter plus a comparator sort, just
+    /// to read `.isEmpty` is work the answer never depends on.
+    func hasWindows(on displayID: CGDirectDisplayID) -> Bool {
+        windows.contains { displayAssignments[$0.id] == displayID }
+    }
+
     /// The other windows sharing `window`'s display, frontmost first, for the Fill & Arrange
     /// tiles. Minimised windows are skipped: an arrangement should only move what is visible.
     func arrangementNeighbours(of window: ManagedWindow) -> [ManagedWindow] {

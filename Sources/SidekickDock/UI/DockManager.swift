@@ -143,7 +143,7 @@ final class DockManager {
     private func syncPanelVisibility() {
         let store = WindowStore.shared
         for (id, controller) in controllers {
-            let empty = store.windows(on: id).isEmpty
+            let empty = !store.hasWindows(on: id)
             controller.setEmpty(empty)
             // A screen-filling active window only hides the resting sliver; the edge
             // trigger still works, so the dock stays reachable.
