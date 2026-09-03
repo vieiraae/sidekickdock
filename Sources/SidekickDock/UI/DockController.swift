@@ -64,11 +64,27 @@ final class DockController {
 
         // The collapsed frame depends on the measured stack, which only exists after SwiftUI
         // has laid out — and changes whenever a window is added, removed, or resized.
+        //
+        // The reveal state is re-read inside the hop, never at publish time. A height change
+        // lands during SwiftUI's own layout pass, so applying a frame there is not allowed and
+        // the work has to be deferred; deciding *before* deferring meant a change published
+        // in the instant before a reveal re-applied the collapsed frame after the panel had
+        // widened, leaving the cards laid out full width inside a sliver-wide window — which
+        // clips them into a straight vertical cut.
         contentHeightObserver = model.$contentHeight
             .removeDuplicates()
             .sink { [weak self] _ in
-                guard let self, !self.model.isRevealed else { return }
-                Task { @MainActor in self.applyFrame(revealed: false) }
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard !self.model.isRevealed else {
+                        DebugLog.log("panel \(self.displayID): height change landed after reveal, collapsed frame skipped")
+                        return
+                    }
+                    // While a collapse is still animating the panel deliberately stays wide;
+                    // the pending item applies the collapsed frame once the cards are home.
+                    guard self.shrinkWorkItem == nil else { return }
+                    self.applyFrame(revealed: false)
+                }
             }
 
         // A card appearing, growing or sliding under a stationary pointer changes the answer
