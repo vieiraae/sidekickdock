@@ -20,8 +20,6 @@ struct WindowCardView: View {
     let onActivate: () -> Void
 
     @EnvironmentObject private var store: WindowStore
-    /// Pending reveal of the Move & Resize menu, cancelled if the pointer moves on first.
-    @State private var tileMenuWork: DispatchWorkItem?
     @State private var isPressed = false
 
     private var preview: NSImage? { store.thumbnail(for: window) }
@@ -126,13 +124,13 @@ struct WindowCardView: View {
                 .strokeBorder(borderGradient, style: borderStroke)
         }
         .opacity(window.isMinimized ? 0.62 : 1)
-        // Two-part shadow: a tight contact shadow plus a soft directional one cast away
-        // from the screen edge, which is what sells the tilt.
+        // A tight contact shadow plus a soft one below. Both cast straight down: a shadow
+        // thrown sideways, away from the screen edge, pools between the cards and the panel
+        // edge into a grey band beside the strip that grows and shrinks with the stack.
         .shadow(color: .black.opacity(0.28), radius: 5, y: 3)
         .shadow(
-            color: .black.opacity(isHovered ? 0.5 : 0.34),
-            radius: isHovered ? 26 : 16,
-            x: (isLeftEdge ? 1 : -1) * (isHovered ? 14 : 9),
+            color: .black.opacity(isRevealed ? (isHovered ? 0.42 : 0.3) : 0),
+            radius: isHovered ? 20 : 14,
             y: isHovered ? 14 : 9
         )
         .overlay(alignment: titleAlignment) {
@@ -207,101 +205,7 @@ struct WindowCardView: View {
     /// The same three controls the window itself carries, in the same order and colours, so
     /// they read as the window's own rather than as dock chrome.
     private var trafficLights: some View {
-        HStack(spacing: 6) {
-            trafficLight(.close)
-            trafficLight(.minimize)
-            trafficLight(.fullScreen)
-        }
-        .onHover { hovering in
-            // The cluster sits inside the card, so its own hover must not read as leaving.
-            if hovering { onHoverChange(true) }
-        }
-    }
-
-    private enum WindowControl {
-        case close, minimize, fullScreen
-
-        var color: Color {
-            switch self {
-            case .close: return Color(red: 1, green: 0.37, blue: 0.34)
-            case .minimize: return Color(red: 1, green: 0.74, blue: 0.18)
-            case .fullScreen: return Color(red: 0.16, green: 0.78, blue: 0.25)
-            }
-        }
-
-        /// The green button is the only one that changes meaning: on a full-screen window it
-        /// leaves full screen, so its arrows point inwards, exactly as the window's own do.
-        func symbol(isFullScreen: Bool) -> String {
-            switch self {
-            case .close: return "xmark"
-            case .minimize: return "minus"
-            case .fullScreen:
-                return isFullScreen
-                    ? "arrow.down.right.and.arrow.up.left"
-                    : "arrow.up.left.and.arrow.down.right"
-            }
-        }
-
-        func label(isFullScreen: Bool) -> String {
-            switch self {
-            case .close: return "Close"
-            case .minimize: return "Minimise"
-            case .fullScreen: return isFullScreen ? "Exit Full Screen" : "Full Screen"
-            }
-        }
-    }
-
-    private func trafficLight(_ control: WindowControl) -> some View {
-        // A minimised window has nothing to minimise, and a full-screen one cannot be
-        // minimised at all — its Space would have nothing left in it, which is why macOS dims
-        // that button in full screen too. Dimmed rather than removed, both because it is what
-        // the window itself does and because removing it would shuffle the other two.
-        let disabled = control == .minimize && !window.canMinimize
-
-        return Circle()
-            .fill(disabled ? Color.white.opacity(0.22) : control.color)
-            .frame(width: 13, height: 13)
-            .overlay {
-                Circle().strokeBorder(Color.black.opacity(0.22), lineWidth: 0.5)
-            }
-            .overlay {
-                Image(systemName: control.symbol(isFullScreen: window.isFullScreen))
-                    .font(.system(size: 7, weight: .black))
-                    .foregroundStyle(Color.black.opacity(disabled ? 0 : 0.62))
-            }
-            .contentShape(Circle())
-            .onHover { hovering in
-                // The cluster's own hover must not read as leaving the card.
-                if hovering { onHoverChange(true) }
-                guard control == .fullScreen else { return }
-                if hovering {
-                    // macOS waits before revealing its own Move & Resize menu; opening
-                    // instantly would flash it every time the pointer crosses the button.
-                    let location = NSEvent.mouseLocation
-                    tileMenuWork?.cancel()
-                    let work = DispatchWorkItem {
-                        TileMenuController.shared.show(for: window, at: location)
-                    }
-                    tileMenuWork = work
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
-                } else {
-                    tileMenuWork?.cancel()
-                    TileMenuController.shared.scheduleHide()
-                }
-            }
-            .onTapGesture {
-                switch control {
-                case .close: store.close(window)
-                case .minimize: store.minimize(window)
-                case .fullScreen:
-                    tileMenuWork?.cancel()
-                    TileMenuController.shared.close()
-                    store.toggleFullScreen(window)
-                }
-            }
-            .allowsHitTesting(!disabled)
-            .help(control.label(isFullScreen: window.isFullScreen))
-            .accessibilityLabel("\(control.label(isFullScreen: window.isFullScreen)) \(window.appName)")
+        WindowTrafficLights(window: window, onHoverChange: onHoverChange)
     }
 
     // MARK: - Geometry
@@ -349,7 +253,7 @@ struct WindowCardView: View {
         if window.isMinimized {
             return StrokeStyle(lineWidth: 1.6, lineCap: .round, dash: [0.01, 4])
         }
-        return StrokeStyle(lineWidth: window.isActive ? 1.8 : 1)
+        return StrokeStyle(lineWidth: window.isActive ? 3 : 1)
     }
 
     /// Horizontal inset for the traffic lights, measured rather than derived.

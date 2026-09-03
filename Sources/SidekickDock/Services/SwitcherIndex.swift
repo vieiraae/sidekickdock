@@ -34,4 +34,34 @@ enum SwitcherIndex {
     static func flatIndex(group: Int, item: Int, groupCounts: [Int]) -> Int {
         groupCounts.prefix(group).reduce(item, +)
     }
+
+    /// Drops one window from the snapshot and says where the selection should land.
+    ///
+    /// The snapshot is deliberately frozen while cycling, so closing a window from a tile is
+    /// the one thing that may shorten it. Removing a tile *before* the selection would shift
+    /// every later window one place left under the highlight, which is why the selection is
+    /// carried by identity rather than left as a raw index. A group emptied by the removal is
+    /// dropped as well: a display heading with no tiles under it is not a thing to show.
+    static func removing(
+        at removed: Int, groupCounts: [Int], selection: Int
+    ) -> (groupCounts: [Int], selection: Int) {
+        let total = groupCounts.reduce(0, +)
+        guard removed >= 0, removed < total else { return (groupCounts, selection) }
+
+        var counts = groupCounts
+        var offset = removed
+        for (index, count) in counts.enumerated() {
+            if offset < count {
+                counts[index] -= 1
+                break
+            }
+            offset -= count
+        }
+        counts.removeAll { $0 == 0 }
+
+        let remaining = total - 1
+        guard remaining > 0 else { return (counts, 0) }
+        let moved = removed < selection ? selection - 1 : selection
+        return (counts, min(moved, remaining - 1))
+    }
 }

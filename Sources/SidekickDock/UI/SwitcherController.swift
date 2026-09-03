@@ -97,6 +97,73 @@ final class SwitcherController: ObservableObject {
         SwitcherIndex.flatIndex(group: group, item: item, groupCounts: groups.map(\.windows.count))
     }
 
+    // MARK: - Window controls
+
+    /// Folds a traffic-light action into the frozen snapshot.
+    ///
+    /// The snapshot cannot refresh itself mid-cycle — that is the whole point of freezing it,
+    /// so tiles never move under the pointer — which means an action taken from a tile has to
+    /// be reflected by hand. A closed window leaves; a minimised one stays but is redrawn as
+    /// put away, the same as it would be in the strip.
+    func apply(_ control: WindowTrafficLights.Control, to window: ManagedWindow) {
+        switch control {
+        case .close:
+            remove(window)
+        case .minimize:
+            replace(window, with: window.markingMinimized())
+        case .fullScreen:
+            // Full screen moves the window into a Space of its own, and macOS follows it
+            // there. Holding an overlay over that switch would be showing a picture of a
+            // world that no longer exists.
+            end()
+        }
+    }
+
+    private func remove(_ window: ManagedWindow) {
+        guard let removed = items.firstIndex(where: { $0.id == window.id }) else { return }
+
+        let result = SwitcherIndex.removing(
+            at: removed, groupCounts: groups.map(\.windows.count), selection: selection
+        )
+        var rebuilt: [WindowStore.DisplayGroup] = []
+        for group in groups {
+            let kept = group.windows.filter { $0.id != window.id }
+            guard !kept.isEmpty else { continue }
+            rebuilt.append(
+                WindowStore.DisplayGroup(
+                    id: group.id, name: group.name, isPrimary: group.isPrimary, windows: kept
+                )
+            )
+        }
+
+        groups = rebuilt
+        items = rebuilt.flatMap(\.windows)
+        // Selection identity is carried by the pure helper; the recency walk is rebuilt
+        // against the shortened list so Tab cannot land on a window that is gone.
+        recency = recency.compactMap { index in
+            guard index != removed else { return nil }
+            return index > removed ? index - 1 : index
+        }
+        selection = items.isEmpty ? 0 : min(result.selection, items.count - 1)
+
+        // One window left is not a switcher. Committing rather than cancelling means the
+        // click the user just made still takes them somewhere sensible.
+        if items.count <= 1 { commit() }
+    }
+
+    private func replace(_ window: ManagedWindow, with updated: ManagedWindow) {
+        groups = groups.map { group in
+            guard group.windows.contains(where: { $0.id == window.id }) else { return group }
+            return WindowStore.DisplayGroup(
+                id: group.id,
+                name: group.name,
+                isPrimary: group.isPrimary,
+                windows: group.windows.map { $0.id == window.id ? updated : $0 }
+            )
+        }
+        items = groups.flatMap(\.windows)
+    }
+
     // MARK: - Lifecycle
 
     private func begin() -> Bool {
@@ -252,9 +319,10 @@ private struct SwitcherView: View {
                             SwitcherTile(
                                 window: window,
                                 size: tile,
-                                isSelected: flat == controller.selection
+                                isSelected: flat == controller.selection,
+                                onHover: { if $0 { controller.select(flat) } },
+                                onControl: { controller.apply($0, to: window) }
                             )
-                            .onHover { if $0 { controller.select(flat) } }
                             .onTapGesture { controller.commit() }
                         }
                     }
@@ -291,25 +359,35 @@ private struct SwitcherTile: View {
     let window: ManagedWindow
     let size: CGSize
     let isSelected: Bool
+    let onHover: (Bool) -> Void
+    let onControl: (WindowTrafficLights.Control) -> Void
+
+    private var preview: NSImage? { WindowStore.shared.thumbnail(for: window) }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.black.opacity(0.22))
 
-            if let image = WindowStore.shared.thumbnail(for: window) {
+            if let image = preview {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .padding(6)
             } else if let icon = window.appIcon {
+                // Centred by an explicit frame, not by the stack: this ZStack is aligned to
+                // the bottom trailing corner for the badge, so an unplaced icon would land
+                // underneath it — the same picture drawn twice in the same spot.
                 Image(nsImage: icon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 48, height: 48)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            if let icon = window.appIcon {
+            // The badge says which app a *picture* belongs to. With no picture the tile is
+            // already nothing but the app's icon, so a second copy of it says nothing.
+            if preview != nil, let icon = window.appIcon {
                 Image(nsImage: icon)
                     .resizable()
                     .frame(width: 26, height: 26)
@@ -331,6 +409,23 @@ private struct SwitcherTile: View {
         }
         .opacity(window.isMinimized ? 0.65 : 1)
         .contentShape(Rectangle())
+        .onHover(perform: onHover)
+        // Layered over the tile's own tap so a click on a light acts on that window instead
+        // of committing the switcher to it.
+        .overlay(alignment: .topLeading) {
+            // Shown on every tile rather than only the selected one. The overlay is opened
+            // by the keyboard, so the pointer is nowhere in particular; making the controls
+            // chase the highlight would mean aiming at a moving target.
+            WindowTrafficLights(
+                window: window,
+                diameter: 11,
+                spacing: 5,
+                showsTileMenu: false,
+                onHoverChange: onHover,
+                onAction: onControl
+            )
+            .padding(7)
+        }
     }
 
     /// Same language as the strip: a minimised window is outlined in dots, because the card

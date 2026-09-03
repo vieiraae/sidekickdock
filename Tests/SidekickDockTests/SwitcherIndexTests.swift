@@ -84,4 +84,46 @@ final class SwitcherIndexTests: XCTestCase {
         let counts = [2, 0, 3]
         XCTAssertEqual(SwitcherIndex.flatIndex(group: 2, item: 0, groupCounts: counts), 2)
     }
+
+    // MARK: - Closing a window from a tile
+
+    func testRemovingBeforeTheSelectionKeepsTheHighlightOnTheSameWindow() {
+        let result = SwitcherIndex.removing(at: 1, groupCounts: [3, 2], selection: 4)
+        XCTAssertEqual(result.groupCounts, [2, 2])
+        XCTAssertEqual(result.selection, 3)
+    }
+
+    func testRemovingAfterTheSelectionLeavesItWhereItWas() {
+        let result = SwitcherIndex.removing(at: 4, groupCounts: [3, 2], selection: 1)
+        XCTAssertEqual(result.groupCounts, [3, 1])
+        XCTAssertEqual(result.selection, 1)
+    }
+
+    func testRemovingTheSelectionItselfStaysInPlace() {
+        let result = SwitcherIndex.removing(at: 2, groupCounts: [3, 2], selection: 2)
+        XCTAssertEqual(result.groupCounts, [2, 2])
+        XCTAssertEqual(result.selection, 2)
+    }
+
+    func testRemovingTheLastWindowPullsTheSelectionBackInsideTheList() {
+        let result = SwitcherIndex.removing(at: 4, groupCounts: [3, 2], selection: 4)
+        XCTAssertEqual(result.selection, 3)
+    }
+
+    func testEmptiedDisplayIsDropped() {
+        let result = SwitcherIndex.removing(at: 3, groupCounts: [3, 1, 2], selection: 0)
+        XCTAssertEqual(result.groupCounts, [3, 2])
+    }
+
+    func testRemovingTheOnlyWindowLeavesAValidSelection() {
+        let result = SwitcherIndex.removing(at: 0, groupCounts: [1], selection: 0)
+        XCTAssertEqual(result.groupCounts, [])
+        XCTAssertEqual(result.selection, 0)
+    }
+
+    func testOutOfRangeRemovalChangesNothing() {
+        let result = SwitcherIndex.removing(at: 9, groupCounts: [3, 2], selection: 1)
+        XCTAssertEqual(result.groupCounts, [3, 2])
+        XCTAssertEqual(result.selection, 1)
+    }
 }
