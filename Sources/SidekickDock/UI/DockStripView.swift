@@ -32,6 +32,7 @@ struct DockStripView: View {
     @State private var hoveredID: CGWindowID?
 
     private var windows: [ManagedWindow] { store.windows(on: model.displayID) }
+    private var stacks: [StripLayout.Stack] { store.stacks(on: model.displayID) }
     private var cardWidth: CGFloat { CGFloat(prefs.cardWidth) }
     private var isLeft: Bool { prefs.edge == .left }
 
@@ -72,33 +73,12 @@ struct DockStripView: View {
         // narrower than the rest, and it is the far edge that shows while the strip is
         // collapsed — aligning there keeps every sliver the same width.
         VStack(alignment: isLeft ? .trailing : .leading, spacing: Theme.cardSpacing) {
-            ForEach(windows) { window in
-                WindowCardView(
-                    window: window,
-                    width: cardWidth,
-                    showTitle: prefs.showTitles,
-                    isLeftEdge: isLeft,
-                    isRevealed: model.isRevealed,
-                    isHovered: hoveredID == window.id,
-                    isDimmed: hoveredID != nil && hoveredID != window.id
-                ) { hovering in
-                    if hovering {
-                        hoveredID = window.id
-                    } else if hoveredID == window.id {
-                        hoveredID = nil
-                    }
-                } onActivate: {
-                    store.activate(window)
-                }
-                .transition(.asymmetric(
-                    insertion: .scale(scale: 0.85, anchor: isLeft ? .leading : .trailing).combined(with: .opacity),
-                    removal: .scale(scale: 0.8).combined(with: .opacity)
-                ))
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: CardRectsKey.self, value: [proxy.frame(in: .global)])
-                    }
-                )
+            ForEach(stacks) { appStack in
+                appCards(appStack)
+                    // The hovered card's title chip hangs below it, into the next pile. Piles
+                    // are siblings, so without this the pile after it is drawn over the chip
+                    // and the title reads as being underneath the next preview.
+                    .zIndex(appStack.windows.contains { $0.id == hoveredID } ? 1 : 0)
             }
         }
         .padding(.vertical, Theme.panelPadding)
@@ -127,6 +107,80 @@ struct DockStripView: View {
         .animation(Theme.reveal, value: model.isRevealed)
     }
 
+    /// One app's windows, laid over one another like a hand of cards: the frontmost window is
+    /// whole at the bottom of the pile and every window behind it shows its top half, so a
+    /// stack says how many windows an app has and still lets each one be recognised.
+    ///
+    /// Drawn back to front, because a later sibling is drawn over an earlier one — which also
+    /// makes the exposed half of each card its own click target, with no overlap to arbitrate.
+    private func appCards(_ appStack: StripLayout.Stack) -> some View {
+        let ordered = appStack.backToFront
+        return VStack(alignment: isLeft ? .trailing : .leading, spacing: 0) {
+            ForEach(Array(ordered.enumerated()), id: \.element.id) { index, window in
+                card(window)
+                    // Negative padding rather than a ZStack with offsets: the pile still has a
+                    // real height, so the panel hugs it and the strip scrolls when it is long.
+                    .padding(.top, index == 0 ? 0 : -overlap(of: ordered[index - 1]))
+                    // Padding rather than an offset for the sideways step, so a card's
+                    // measured rectangle — which is what makes the panel solid where a card
+                    // is and click-through everywhere else — stays where the card is drawn.
+                    //
+                    // Collapsed as well as revealed, so a pile still reads as a pile from the
+                    // sliver alone. It costs the deeper cards some of their peek, and with it
+                    // their app badge, but every window in a pile belongs to the same app and
+                    // the front card of the pile keeps the full peek — so the badge that
+                    // identifies it is never the one that gets clipped.
+                    .padding(
+                        isLeft ? .trailing : .leading,
+                        StripLayout.stagger(behindFront: ordered.count - 1 - index)
+                    )
+                    // A hovered card lifts clear of the pile, so pointing at a window behind
+                    // another shows the whole of it rather than the half that was exposed.
+                    .zIndex(hoveredID == window.id ? Double(ordered.count) : Double(index))
+            }
+        }
+    }
+
+    private func card(_ window: ManagedWindow) -> some View {
+        WindowCardView(
+            window: window,
+            width: cardWidth,
+            showTitle: prefs.showTitles,
+            isLeftEdge: isLeft,
+            isRevealed: model.isRevealed,
+            isHovered: hoveredID == window.id,
+            isDimmed: hoveredID != nil && hoveredID != window.id
+        ) { hovering in
+            if hovering {
+                hoveredID = window.id
+            } else if hoveredID == window.id {
+                hoveredID = nil
+            }
+        } onActivate: {
+            store.activate(window)
+        }
+        .transition(.asymmetric(
+            insertion: .scale(scale: 0.85, anchor: isLeft ? .leading : .trailing).combined(with: .opacity),
+            removal: .scale(scale: 0.8).combined(with: .opacity)
+        ))
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: CardRectsKey.self, value: [proxy.frame(in: .global)])
+            }
+        )
+    }
+
+    /// How much of `window`'s card the next one in its stack covers. The card's height comes
+    /// from the picture it is about to draw, exactly as the card itself computes it, so the
+    /// pile never drifts from what is on screen.
+    private func overlap(of window: ManagedWindow) -> CGFloat {
+        let aspect = CardGeometry.aspectRatio(
+            image: store.thumbnail(for: window)?.size, windowAspect: window.aspectRatio
+        )
+        return StripLayout.overlap(
+            cardHeight: CardGeometry.height(width: cardWidth, aspectRatio: aspect)
+        )
+    }
     /// Positive angles bring the leading edge forward, which is the direction the real
     /// Stage Manager tilts its left-hand strip.
     private var tilt: Double {

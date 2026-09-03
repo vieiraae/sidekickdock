@@ -74,6 +74,10 @@ final class WindowStore: ObservableObject {
     /// the window came back under whichever tab the window server happened to list first.
     /// Restoring that one made the app bring the wrong tab to the front.
     private var tabAnchors: [WindowEnumerator.TabGroup: CGWindowID] = [:]
+    /// Where each app sits in the strip, and which app each window belongs to so that place
+    /// can be given up once the app is gone.
+    private var appSlots: [pid_t: UInt64] = [:]
+    private var windowPids: [CGWindowID: pid_t] = [:]
     /// Displays whose strip is open, and how many controllers say so.
     private var boostedDisplays: [CGDirectDisplayID: Int] = [:]
 
@@ -162,26 +166,12 @@ final class WindowStore: ObservableObject {
 
     func windows(on displayID: CGDirectDisplayID) -> [ManagedWindow] {
         let onDisplay = windows.filter { displayAssignments[$0.id] == displayID }
+        return StripLayout.ordered(onDisplay, appSlot: appSlots, windowSlot: order)
+    }
 
-        // Windows of one app sit together. Each app takes the slot of its earliest window,
-        // so grouping never overrides slot stability: a second window opening later joins
-        // its siblings rather than landing at the bottom, and nothing moves on a click.
-        var groupSlot: [pid_t: UInt64] = [:]
-        for window in onDisplay {
-            let slot = order[window.id] ?? .max
-            if let existing = groupSlot[window.pid], existing <= slot { continue }
-            groupSlot[window.pid] = slot
-        }
-
-        return onDisplay.sorted { lhs, rhs in
-            let lg = groupSlot[lhs.pid] ?? .max
-            let rg = groupSlot[rhs.pid] ?? .max
-            if lg != rg { return lg < rg }
-            let l = order[lhs.id] ?? .max
-            let r = order[rhs.id] ?? .max
-            if l == r { return lhs.id < rhs.id }
-            return l < r
-        }
+    /// The same windows, grouped into the per-app stacks the strip draws.
+    func stacks(on displayID: CGDirectDisplayID) -> [StripLayout.Stack] {
+        StripLayout.stacks(windows(on: displayID))
     }
 
     /// The other windows sharing `window`'s display, frontmost first, for the Fill & Arrange
@@ -305,6 +295,12 @@ final class WindowStore: ObservableObject {
                 order[window.id] = nextSlot
                 nextSlot &+= 1
             }
+            // An app keeps the place its first window gave it for as long as it has any
+            // window at all, so nothing moves when one of its windows is replaced.
+            windowPids[window.id] = window.pid
+            if appSlots[window.pid] == nil {
+                appSlots[window.pid] = order[window.id]
+            }
             // Minimising and restoring are animations, and for their duration CoreGraphics
             // reports the in-flight frame: the wrong size, the wrong aspect ratio, and —
             // since the animation flies to and from the Dock — often the wrong display.
@@ -339,6 +335,9 @@ final class WindowStore: ObservableObject {
         vanishing = vanishing.filter { remembered.contains($0.key) }
         settledFrames = settledFrames.filter { remembered.contains($0.key) }
         tabAnchors = tabAnchors.filter { remembered.contains($0.value) }
+        windowPids = windowPids.filter { remembered.contains($0.key) }
+        let livePids = Set(windowPids.values)
+        appSlots = appSlots.filter { livePids.contains($0.key) }
         previewAttempted.formIntersection(remembered)
         if thumbnails.keys.contains(where: { !remembered.contains($0) }) {
             thumbnails = thumbnails.filter { remembered.contains($0.key) }
@@ -604,6 +603,17 @@ final class WindowStore: ObservableObject {
             let backing = scales[id] ?? 2
             let size = NSSize(width: CGFloat(cgImage.width) / backing,
                               height: CGFloat(cgImage.height) / backing)
+            // A capture whose shape is off but still inside the tolerance is kept, and the
+            // card then takes the *picture's* shape — so the crop measured below is almost
+            // always zero and says nothing about a preview that came back cut. Log the
+            // disagreement itself: it is the only place a mis-shaped capture is visible.
+            let capturedAspect = size.width / max(size.height, 1)
+            let windowAspect = end.width / max(end.height, 1)
+            let drift = abs(capturedAspect - windowAspect) / windowAspect
+            if drift > 0.02 {
+                DebugLog.log(String(format: "preview: #%d captured %.0fx%.0f for a %.0fx%.0f window, shape off by %.0f%%",
+                                    id, size.width, size.height, end.width, end.height, drift * 100))
+            }
             let crop = CardGeometry.cropFraction(image: size, width: CGFloat(Preferences.shared.cardWidth))
             if crop > 0.02 {
                 DebugLog.log(String(format: "preview: #%d %.0fx%.0f will be cropped by %.0f%%",
