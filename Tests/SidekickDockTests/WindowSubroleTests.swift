@@ -30,14 +30,14 @@ final class WindowSubroleTests: XCTestCase {
 final class SubroleProbeScheduleTests: XCTestCase {
 
     func testAWindowNeverAskedAboutIsAskedAboutNow() {
-        let wanted = WindowSubroles.needsProbing(unjudged: [1, 2], askedAt: [:], now: Date())
+        let wanted = WindowSubroles.needsProbing(windows: [1, 2], askedAt: [:], now: Date())
         XCTAssertEqual(wanted, [1, 2])
     }
 
     func testAnUnansweredWindowIsNotAskedAboutAgainImmediately() {
         let now = Date()
         let wanted = WindowSubroles.needsProbing(
-            unjudged: [1], askedAt: [1: now.addingTimeInterval(-0.5)], now: now)
+            windows: [1], askedAt: [1: now.addingTimeInterval(-0.5)], now: now)
         XCTAssertTrue(wanted.isEmpty)
     }
 
@@ -45,7 +45,50 @@ final class SubroleProbeScheduleTests: XCTestCase {
         // An app can simply have been slow to publish a window it will describe eventually.
         let now = Date()
         let wanted = WindowSubroles.needsProbing(
-            unjudged: [1], askedAt: [1: now.addingTimeInterval(-6)], now: now)
+            windows: [1], askedAt: [1: now.addingTimeInterval(-6)], now: now)
         XCTAssertEqual(wanted, [1])
+    }
+
+    func testAWindowKnownToBeRealIsNeverAskedAboutAgain() {
+        let now = Date()
+        let wanted = WindowSubroles.needsProbing(
+            windows: [1],
+            verdicts: [1: true],
+            askedAt: [1: now.addingTimeInterval(-3600)],
+            now: now
+        )
+        XCTAssertTrue(wanted.isEmpty)
+    }
+
+    func testAWindowJustJudgedUnrealIsNotAskedAboutAgainImmediately() {
+        // The filter exists to keep a popup surface out of the strip, and re-asking on every
+        // tick is the cost this cache was built to avoid.
+        let now = Date()
+        let wanted = WindowSubroles.needsProbing(
+            windows: [1],
+            verdicts: [1: false],
+            askedAt: [1: now.addingTimeInterval(-5)],
+            now: now
+        )
+        XCTAssertTrue(wanted.isEmpty)
+    }
+
+    func testAWindowJudgedUnrealLongAgoIsAskedAboutAgain() {
+        // The bug this prevents: a real window that answered AXUnknown while it was still
+        // being built stayed hidden for as long as the dock ran — days, in practice.
+        let now = Date()
+        let wanted = WindowSubroles.needsProbing(
+            windows: [1],
+            verdicts: [1: false],
+            askedAt: [1: now.addingTimeInterval(-31)],
+            now: now
+        )
+        XCTAssertEqual(wanted, [1])
+    }
+
+    func testAnUnrealVerdictWithNoTimestampIsAskedAboutAgain() {
+        XCTAssertEqual(
+            WindowSubroles.needsProbing(windows: [1], verdicts: [1: false], askedAt: [:]), [1]
+        )
     }
 }

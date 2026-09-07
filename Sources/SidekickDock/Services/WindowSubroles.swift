@@ -45,17 +45,42 @@ enum WindowSubroles {
     /// enough that one that never will costs a sweep every few seconds instead of every tick.
     static let retryAfter: TimeInterval = 5
 
-    /// The windows worth asking about: those with no verdict that have either never been
-    /// asked or were last asked long enough ago to be worth a second try.
+    /// How long a window judged *not real* keeps that verdict before it is asked about again.
+    ///
+    /// A verdict used to be final for as long as the window existed, and that made a single
+    /// wrong answer permanent: a window that answered `AXUnknown` while it was still being
+    /// built — which Chromium windows do — stayed invisible until the dock was restarted,
+    /// days later. The two mistakes are not equally bad. An extra card is visible and
+    /// short-lived, because the surfaces this filter exists for are dismissed in seconds; a
+    /// missing card is silent and, without this, permanent. So a negative is a working
+    /// assumption with an expiry rather than a fact, and only "this is a real window" is
+    /// remembered for good.
+    static let recheckAfter: TimeInterval = 30
+
+    /// The windows worth asking about.
+    ///
+    /// A window already known to be real is never asked about again. One judged unreal is
+    /// asked again once its verdict has aged out, and one that has never been answered for is
+    /// retried sooner, since an app may simply have been slow to publish it.
     static func needsProbing(
-        unjudged: [CGWindowID],
+        windows: [CGWindowID],
+        verdicts: [CGWindowID: Bool] = [:],
         askedAt: [CGWindowID: Date],
         now: Date = Date(),
-        retryAfter: TimeInterval = retryAfter
+        retryAfter: TimeInterval = retryAfter,
+        recheckAfter: TimeInterval = recheckAfter
     ) -> Set<CGWindowID> {
-        Set(unjudged.filter { id in
-            guard let asked = askedAt[id] else { return true }
-            return now.timeIntervalSince(asked) >= retryAfter
+        Set(windows.filter { id in
+            switch verdicts[id] {
+            case true?:
+                return false
+            case false?:
+                guard let asked = askedAt[id] else { return true }
+                return now.timeIntervalSince(asked) >= recheckAfter
+            case nil:
+                guard let asked = askedAt[id] else { return true }
+                return now.timeIntervalSince(asked) >= retryAfter
+            }
         })
     }
 
@@ -73,10 +98,19 @@ enum WindowSubroles {
         lock.unlock()
 
         let now = Date()
-        let unjudged = windows.filter { known[$0.id] == nil }
-        let wanted = needsProbing(unjudged: unjudged.map(\.id), askedAt: asked, now: now)
-        for pid in Set(unjudged.filter { wanted.contains($0.id) }.map(\.pid)) {
-            for (id, isReal) in probe(pid: pid) where known[id] == nil {
+        let wanted = needsProbing(
+            windows: windows.map(\.id), verdicts: known, askedAt: asked, now: now
+        )
+        for pid in Set(windows.filter { wanted.contains($0.id) }.map(\.pid)) {
+            for (id, isReal) in probe(pid: pid) {
+                // A window we asked about takes the fresh answer, even over an existing
+                // verdict — that is the whole point of asking again. Others are only filled
+                // in where nothing is known, so a window this app happens to list is judged
+                // without a sweep of its own.
+                guard wanted.contains(id) || known[id] == nil else { continue }
+                if known[id] == false, isReal {
+                    DebugLog.log("snapshot: #\(id) is a real window after all, showing it")
+                }
                 known[id] = isReal
             }
         }
