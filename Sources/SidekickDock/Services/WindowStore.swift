@@ -327,19 +327,24 @@ final class WindowStore: ObservableObject {
         }
         let current = resolved
 
-        let remembered = Set(lastSeen.filter { now.timeIntervalSince($0.value) < forgetAfter }.keys)
-        lastSeen = lastSeen.filter { remembered.contains($0.key) }
-        order = order.filter { remembered.contains($0.key) }
-        displayAssignments = displayAssignments.filter { remembered.contains($0.key) }
-        lastFrames = lastFrames.filter { remembered.contains($0.key) }
-        vanishing = vanishing.filter { remembered.contains($0.key) }
-        settledFrames = settledFrames.filter { remembered.contains($0.key) }
-        tabAnchors = tabAnchors.filter { remembered.contains($0.value) }
-        windowPids = windowPids.filter { remembered.contains($0.key) }
-        let livePids = Set(windowPids.values)
-        appSlots = appSlots.filter { livePids.contains($0.key) }
-        previewAttempted.formIntersection(remembered)
-        if thumbnails.keys.contains(where: { !remembered.contains($0) }) {
+        // Every window seen this pass refreshed its `lastSeen` stamp in the loop above, and
+        // the side tables below only ever gain keys for windows that were seen — so `lastSeen`
+        // always holds a superset of their keys. Until an entry ages past `forgetAfter` there
+        // is nothing to evict, and rebuilding each table would only reallocate it unchanged.
+        // This sweep runs on every tick, so skip it entirely until something actually expires.
+        if lastSeen.contains(where: { now.timeIntervalSince($0.value) >= forgetAfter }) {
+            let remembered = Set(lastSeen.filter { now.timeIntervalSince($0.value) < forgetAfter }.keys)
+            lastSeen = lastSeen.filter { remembered.contains($0.key) }
+            order = order.filter { remembered.contains($0.key) }
+            displayAssignments = displayAssignments.filter { remembered.contains($0.key) }
+            lastFrames = lastFrames.filter { remembered.contains($0.key) }
+            vanishing = vanishing.filter { remembered.contains($0.key) }
+            settledFrames = settledFrames.filter { remembered.contains($0.key) }
+            tabAnchors = tabAnchors.filter { remembered.contains($0.value) }
+            windowPids = windowPids.filter { remembered.contains($0.key) }
+            let livePids = Set(windowPids.values)
+            appSlots = appSlots.filter { livePids.contains($0.key) }
+            previewAttempted.formIntersection(remembered)
             thumbnails = thumbnails.filter { remembered.contains($0.key) }
         }
 
